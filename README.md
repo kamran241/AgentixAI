@@ -23,6 +23,7 @@ Drop in a pizza menu, a dental clinic brochure, or a laundry price list — the 
 - [Key Features](#key-features)
 - [Project Structure](#project-structure)
 - [Tech Stack](#tech-stack)
+- [Quick Setup](#-quick-setup-recommended)
 - [Getting Started](#getting-started)
 - [Running Tests](#running-tests)
 - [API Endpoints](#api-endpoints)
@@ -173,7 +174,28 @@ Delivery addresses are verified against OpenStreetMap (Nominatim) to catch inval
 
 ## Getting Started
 
-### Prerequisites
+### ⚡ Quick Setup (Recommended)
+
+Just run the startup script — it handles **everything** for you:
+
+```bash
+# Windows
+start_project.bat
+```
+
+This single command will:
+1. **Create a virtual environment** (`venv`) automatically
+2. **Install all dependencies** from `requirements.txt`
+3. **Launch all frontends** and the backend server
+
+> **No manual setup required.** One click and you're up and running.
+
+> [!TIP]
+> AgentixAI works with **all kinds of PDF files** — restaurant menus, clinic brochures, laundry price lists, legal documents, product catalogs, and more. Just drop in your PDF and the system will automatically extract the business identity, rules, and services.
+
+---
+
+### Prerequisites (Manual Setup)
 - Python 3.10+
 - OpenAI API Key
 
@@ -221,47 +243,6 @@ uvicorn app.main:app --reload
 The API will be available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
 
 ---
-
-```md
----
-
-## Frontend (Run Locally)
-
-If you’re running the UI locally:
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Then open the URL shown in the terminal.
-
-### Configure the Business (Menu / Details)
-From the frontend **Settings** page:
-1. Upload your menu/business document (PDF/text)
-2. Add any other business details
-3. The assistant will work according to the uploaded menu/details.
-
----
-
-## Easy Setup (Windows)
-
-For an easy one-command setup on Windows, run:
-
-```bat
-start_project.bat
-```
-
-This will:
-- Create a Python virtual environment (`venv`)
-- Install backend dependencies from `requirements.txt`
-- Run the backend server
-- Run the frontend dev server
-
----
-```
-
 
 ## Running Tests
 
@@ -337,10 +318,3 @@ This project is open source and available under the [MIT License](LICENSE).
 <p align="center">
   Built with LangGraph, OpenAI, and FastAPI
 </p>
-
-
-```md
-The API will be available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
-```
-
-
