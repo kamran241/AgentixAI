@@ -16,6 +16,13 @@ Drop in a pizza menu, a dental clinic brochure, or a laundry price list — the 
 
 ---
 
+
+
+
+---
+
+---
+
 ## Table of Contents
 
 - [How It Works](#how-it-works)
