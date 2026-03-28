@@ -181,7 +181,7 @@ Delivery addresses are verified against OpenStreetMap (Nominatim) to catch inval
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/AgentixAI.git
+git clone https://github.com/kamran241/AgentixAI.git
 cd AgentixAI
 
 # Create and activate virtual environment
