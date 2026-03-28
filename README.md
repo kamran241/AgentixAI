@@ -17,10 +17,11 @@ Drop in a pizza menu, a dental clinic brochure, or a laundry price list — the 
 ---
 
 
-
-
 ---
-
+<p align="center">
+<img src="https://github.com/kamran241/AgentixAI/blob/main/image%20(1).png" />
+<img src="https://github.com/kamran241/AgentixAI/blob/main/Screenshot%202026-02-24%20005239.png" />
+</p>
 ---
 
 ## Table of Contents
