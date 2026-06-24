@@ -116,8 +116,14 @@ def _build_system_prompt(profile: dict, feedback: str = "") -> SystemMessage:
 
     if capabilities.get('has_orders'):
         tool_instructions.append(
-            "ORDERS: Use 'analyze_stats' at the start of an order to suggest popular items. "
-            "When an order is ready, use 'save_record' with always_insert=False to write it."
+            "ORDERS — follow this exact flow every time:\n"
+            "  1. Ask what item(s) they want and any customizations\n"
+            "  2. Confirm item, size, customization, and total price\n"
+            "  3. Collect: Full Name, Phone Number, Email Address — if the customer skips any of these, ask again. Do NOT proceed.\n"
+            "  4. Read back the complete order for CONFIRMATION\n"
+            "  5. Only after customer says yes/confirms → call save_record(always_insert=True)\n"
+            "  HARD RULE: If you cannot find the customer's real Name, Phone, AND Email in this conversation, you MUST ask for them before calling save_record. No exceptions.\n"
+            "  NEVER use placeholder values like 'John Doe', 'your_name', or '1234567890'."
         )
     if capabilities.get('has_bookings'):
         slots_note = (
@@ -132,10 +138,12 @@ def _build_system_prompt(profile: dict, feedback: str = "") -> SystemMessage:
             f"  2. If the business has multiple staff, ask for their PREFERENCE (e.g. which dentist).\n"
             f"  3. Ask for their preferred DATE. {slots_note}\n"
             f"  4. Show available slots for that date and let the customer CHOOSE one.\n"
-            f"  5. Collect: Full Name, Phone Number, Email Address.\n"
-            f"  6. Read back all details for CONFIRMATION: service, staff (if chosen), date, time, name, phone, email.\n"
-            f"  7. Only after customer confirms — call save_record(always_insert=True).\n"
-            f"  RESCHEDULE: If customer wants to change, collect the new date/time, re-confirm all details, then call save_record(always_insert=True) again with updated info."
+            f"  5. Collect: Full Name, Phone Number, Email Address — if customer skips any, ask again. Do NOT proceed.\n"
+            f"  6. Read back ALL details for CONFIRMATION: service, date, time, name, phone, email.\n"
+            f"  7. Only after customer confirms all details — call save_record(always_insert=True).\n"
+            f"  HARD RULE: Steps 5 and 6 are MANDATORY. If Name, Phone, or Email is missing from this conversation, do NOT call save_record — ask for the missing info first.\n"
+            f"  NEVER use placeholder values like 'John Doe', 'session123', or '1234567890'.\n"
+            f"  RESCHEDULE: collect new date/time, re-confirm all details, call save_record(always_insert=True) again."
         )
     if capabilities.get('has_delivery'):
         tool_instructions.append(
@@ -212,7 +220,7 @@ CRITICAL — TOOL CALLS: You have real tools. NEVER write tool or function calls
 RESPONSE STYLE: Be concise and conversational. Answer in 1-3 sentences. Only list details when the customer specifically asks.{feedback_section}""")
 
 
-def _build_critic_prompt(profile: dict, user_query: str, last_msg: str, tools_called: list) -> str:
+def _build_critic_prompt(profile: dict, user_query: str, last_msg: str, tools_called: list, conversation_transcript: str = "") -> str:
     capabilities = profile.get("capabilities") or {}
 
     criteria = [
@@ -221,7 +229,13 @@ def _build_critic_prompt(profile: dict, user_query: str, last_msg: str, tools_ca
         "TOOL USE: The agent must use 'save_record' (not just describe) to actually save data.",
     ]
     if capabilities.get('has_orders'):
-        criteria.append("UPSELLING: Suggest a popular item when the user is ordering.")
+        criteria.append(
+            "ORDER FLOW: Before saving an order, the agent MUST collect: Name, Phone, Email, and confirm the complete "
+            "order details (items, size, customization, total). Only after customer confirms → call save_record(always_insert=True). "
+            "If the response says the order is 'saved', 'confirmed', or 'ready' but save_record is NOT in Tools Called, this is INVALID. "
+            "Missing email before saving is also INVALID."
+        )
+        criteria.append("UPSELLING: Suggest a complementary item (pastry, snack, upgrade) when the user is ordering.")
     if capabilities.get('has_bookings'):
         criteria.append(
             "BOOKING FLOW: The agent must follow all 7 steps: ask service type → ask staff preference → "
@@ -238,16 +252,20 @@ def _build_critic_prompt(profile: dict, user_query: str, last_msg: str, tools_ca
 
     criteria_text = "\n".join(f"- {c}" for c in criteria)
 
-    return f"""Evaluate whether the assistant's response is correct and complete.
+    transcript_section = f"\nConversation so far:\n{conversation_transcript}\n" if conversation_transcript else ""
 
-User Query: {user_query}
-Assistant Response: {last_msg}
-Tools Called: {', '.join(tools_called) if tools_called else 'None'}
+    return f"""Evaluate whether the assistant's last response is correct and complete.
+{transcript_section}
+Last User Message: {user_query}
+Assistant's Last Response: {last_msg}
+Tools Called (entire session): {', '.join(tools_called) if tools_called else 'None'}
 
 Criteria:
 {criteria_text}
 
-Is this response valid? If not, give specific instructions for exactly what must be fixed."""
+CUSTOMER DATA CHECK: If save_record was called, verify that the customer's real Name, Phone, AND Email actually appear in the conversation transcript above (typed by the customer, not invented by the assistant). If any are missing or look like placeholders (e.g. "John Doe", "session123", "1234567890", "your_name"), the response is INVALID — instruct the assistant to ask the customer for the missing information before saving.
+
+Is this response valid? If not, give specific, actionable instructions for what must be fixed."""
 
 
 def _compile_graph(has_orders: bool, has_bookings: bool, has_delivery: bool):
@@ -286,10 +304,11 @@ def _compile_graph(has_orders: bool, has_bookings: bool, has_delivery: bool):
         last_msg = state["messages"][-1].content
 
         user_query = ""
-        for m in reversed(state["messages"]):
+        human_messages = []
+        for m in state["messages"]:
             if isinstance(m, HumanMessage):
-                user_query = m.content
-                break
+                human_messages.append(m.content)
+                user_query = m.content  # last human message
 
         tools_called = [
             tc['name']
@@ -298,10 +317,26 @@ def _compile_graph(has_orders: bool, has_bookings: bool, has_delivery: bool):
             for tc in m.tool_calls
         ]
 
-        prompt = _build_critic_prompt(profile, user_query, last_msg, tools_called)
+        # Build a compact conversation transcript for the critic
+        transcript_lines = []
+        for m in state["messages"]:
+            if isinstance(m, HumanMessage):
+                transcript_lines.append(f"Customer: {m.content}")
+            elif isinstance(m, AIMessage) and m.content:
+                transcript_lines.append(f"Assistant: {m.content}")
+        conversation_transcript = "\n".join(transcript_lines[-20:])  # last 20 turns max
+
+        prompt = _build_critic_prompt(profile, user_query, last_msg, tools_called, conversation_transcript)
         result = critic_model.invoke(prompt)
 
-        if not result.is_valid and current_retries < 1:
+        # allow 2 retries when save_record is missing but claimed — strict enforcement
+        caps = profile.get("capabilities") or {}
+        needs_save = caps.get("has_orders") or caps.get("has_bookings")
+        claimed_saved = any(w in last_msg.lower() for w in ("saved", "confirmed", "order ready", "booking confirmed", "record saved"))
+        save_was_called = "save_record" in tools_called
+        max_retries = 2 if (needs_save and claimed_saved and not save_was_called) else 1
+
+        if not result.is_valid and current_retries < max_retries:
             return {"critic_feedback": result.feedback, "retry_count": current_retries + 1}
         return {"critic_feedback": "", "retry_count": 0}
 
