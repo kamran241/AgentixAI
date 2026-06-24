@@ -11,8 +11,8 @@ pandas==2.2.3
 langchain==0.3.7
 langchain-groq==0.2.3
 python-jose[cryptography]==3.3.0
+cryptography>=42.0.0
 passlib[bcrypt]==1.7.4
-alembic==1.13.1
 pydantic[email]==2.10.3
 email-validator==2.2.0
 langchain-community==0.3.7

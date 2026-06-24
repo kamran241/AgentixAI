@@ -26,6 +26,9 @@ class BusinessProfile(Base):
     dynamic_tables = Column(JSON)   # [{table_name, purpose, columns:[{name,type}]}]
     widget_config = Column(JSON, default={})   # {bot_name, primary_color, welcome_message, logo_url, position}
     pdf_filename = Column(String, nullable=True)
+    custom_prompt = Column(Text, nullable=True)       # optional system prompt override
+    external_db_url = Column(Text, nullable=True)     # encrypted external DB connection string
+    availability = Column(JSON, nullable=True)        # weekly schedule, slot duration, blocked dates
     created_at = Column(DateTime, server_default=func.now())
 
 

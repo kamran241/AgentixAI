@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Zap, Eye, EyeOff } from 'lucide-react';
+import { Zap, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
@@ -29,6 +29,10 @@ export default function Login() {
 
   return (
     <div className="auth-page">
+      <Link to="/" className="auth-back-btn">
+        <ArrowLeft size={14} /> Back to home
+      </Link>
+
       <div className="auth-card">
         <Link to="/" className="auth-logo">
           <div className="logo-icon small">

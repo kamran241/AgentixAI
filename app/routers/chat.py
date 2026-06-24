@@ -1,3 +1,4 @@
+import re
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -8,6 +9,19 @@ from agent.tools import current_business_id as biz_id_var
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 router = APIRouter(tags=["chat"])
+
+# Strip any leaked tool-call syntax the LLM accidentally writes in response text
+_TOOL_LEAK_RE = re.compile(
+    r'<function[=\s][^>]*>.*?</function>|'  # <function=name>...</function>
+    r'<tool_call>.*?</tool_call>|'           # <tool_call>...</tool_call>
+    r'<function_calls>.*?</function_calls>', # <function_calls>...</function_calls>
+    re.DOTALL,
+)
+
+def _clean_response(text: str) -> str:
+    """Remove any raw function/tool-call blocks the model leaked into response text."""
+    cleaned = _TOOL_LEAK_RE.sub('', text)
+    return re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
 
 def _resolve_profile(db: Session, session_id: str, business_id: int = None):
@@ -83,7 +97,24 @@ async def chat(session_id: str, message: str, db: Session = Depends(get_db)):
         "config": profile.config,
         "dynamic_tables": profile.dynamic_tables or [],
         "capabilities": profile.capabilities or {},
+        "custom_prompt": profile.custom_prompt or "",
+        "availability": profile.availability or {},
     } if profile else {}
+
+    # Pre-fetch upcoming slots so the AI has real-time availability in its context
+    if profile and (profile.capabilities or {}).get("has_bookings") and profile.availability:
+        from datetime import date, timedelta
+        data_sess = crud.get_business_session(profile)
+        try:
+            upcoming = []
+            for i in range(7):
+                d = (date.today() + timedelta(days=i)).isoformat()
+                info = crud.compute_slots_for_date(profile, d, data_sess)
+                if info:
+                    upcoming.append(info)
+            profile_dict["upcoming_slots"] = upcoming
+        finally:
+            data_sess.close()
 
     agent_graph = get_graph(profile.capabilities or {} if profile else {})
     config = {"configurable": {"thread_id": session_id}}
@@ -116,7 +147,7 @@ async def chat(session_id: str, message: str, db: Session = Depends(get_db)):
 
     crud.update_session_history(db, session_id, new_history)
 
-    last_response = result["messages"][-1].content
+    last_response = _clean_response(result["messages"][-1].content)
     crud.create_audit_log(
         db, "chat_interaction",
         {"input": message, "output": last_response},

@@ -6,6 +6,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import BusinessDetail from './pages/BusinessDetail';
+import Bookings from './pages/Bookings';
 import ChatPage from './pages/ChatPage';
 import WidgetChat from './pages/WidgetChat';
 import Privacy from './pages/Privacy';
@@ -28,6 +29,9 @@ function AppRoutes() {
       } />
       <Route path="/business/:id" element={
         <ProtectedRoute><BusinessDetail /></ProtectedRoute>
+      } />
+      <Route path="/bookings" element={
+        <ProtectedRoute><Bookings /></ProtectedRoute>
       } />
       <Route path="/chat" element={
         <ProtectedRoute><ChatPage /></ProtectedRoute>

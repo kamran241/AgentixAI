@@ -5,7 +5,7 @@ from db.database import get_db
 from db import crud
 from agent.graph import get_graph
 from agent.tools import current_business_id as biz_id_var
-from app.routers.chat import _build_history, _resolve_profile
+from app.routers.chat import _build_history, _resolve_profile, _clean_response
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 router = APIRouter(prefix="/widget", tags=["widget"])
@@ -57,7 +57,24 @@ async def widget_chat(token: str, session_id: str, message: str, db: Session = D
         "config": profile.config,
         "dynamic_tables": profile.dynamic_tables or [],
         "capabilities": profile.capabilities or {},
+        "custom_prompt": profile.custom_prompt or "",
+        "availability": profile.availability or {},
     }
+
+    # Pre-fetch upcoming slots so the AI has real-time availability in its context
+    if (profile.capabilities or {}).get("has_bookings") and profile.availability:
+        from datetime import date, timedelta
+        data_sess = crud.get_business_session(profile)
+        try:
+            upcoming = []
+            for i in range(7):
+                d = (date.today() + timedelta(days=i)).isoformat()
+                info = crud.compute_slots_for_date(profile, d, data_sess)
+                if info:
+                    upcoming.append(info)
+            profile_dict["upcoming_slots"] = upcoming
+        finally:
+            data_sess.close()
 
     agent_graph = get_graph(profile.capabilities or {})
     config = {"configurable": {"thread_id": session_id}}
@@ -90,4 +107,4 @@ async def widget_chat(token: str, session_id: str, message: str, db: Session = D
 
     crud.update_session_history(db, session_id, new_history)
 
-    return {"response": result["messages"][-1].content}
+    return {"response": _clean_response(result["messages"][-1].content)}

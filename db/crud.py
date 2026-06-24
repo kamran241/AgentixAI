@@ -1,11 +1,56 @@
 import json
 import secrets
 
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy import text
 
-from . import models
-from core.security import hash_password, verify_password
+from . import models, database
+from core.security import hash_password, verify_password, encrypt_db_url, decrypt_db_url
+
+
+# ── External DB engine cache ──────────────────────────────────────────────────
+
+_external_engines: dict = {}
+
+
+def get_business_engine(profile: models.BusinessProfile):
+    """Return the SQLAlchemy engine for a business — external if configured, platform otherwise."""
+    if not profile or not profile.external_db_url:
+        return database.engine
+    biz_id = profile.id
+    if biz_id not in _external_engines:
+        url = decrypt_db_url(profile.external_db_url)
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        _external_engines[biz_id] = create_engine(url, pool_pre_ping=True, pool_size=3, max_overflow=5)
+    return _external_engines[biz_id]
+
+
+def get_business_session(profile: models.BusinessProfile) -> Session:
+    """Return a new Session bound to the business's engine (external or platform)."""
+    engine = get_business_engine(profile)
+    return sessionmaker(bind=engine)()
+
+
+def set_external_db_url(db: Session, business_id: int, user_id: int, raw_url: str | None):
+    """Encrypt and store (or clear) the external DB URL for a business."""
+    profile = db.query(models.BusinessProfile).filter(
+        models.BusinessProfile.id == business_id,
+        models.BusinessProfile.user_id == user_id,
+    ).first()
+    if not profile:
+        return None
+    if raw_url:
+        profile.external_db_url = encrypt_db_url(raw_url)
+        # Evict cached engine so next call rebuilds with new URL
+        _external_engines.pop(business_id, None)
+    else:
+        profile.external_db_url = None
+        _external_engines.pop(business_id, None)
+    db.commit()
+    db.refresh(profile)
+    return profile
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────
@@ -144,6 +189,101 @@ def update_widget_config(db: Session, business_id: int, user_id: int, config: di
     return profile
 
 
+def update_availability(db: Session, business_id: int, user_id: int, data: dict):
+    from sqlalchemy.orm.attributes import flag_modified
+    profile = db.query(models.BusinessProfile).filter(
+        models.BusinessProfile.id == business_id,
+        models.BusinessProfile.user_id == user_id,
+    ).first()
+    if not profile:
+        return None
+    profile.availability = data
+    flag_modified(profile, "availability")
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def compute_slots_for_date(profile, date_str: str, data_db=None) -> dict | None:
+    """Return free/booked slots for one date based on the business availability config."""
+    from datetime import datetime, timedelta
+
+    availability = profile.availability or {}
+    if isinstance(availability, str):
+        import json as _json
+        try:
+            availability = _json.loads(availability)
+        except Exception:
+            return None
+    if not availability or not availability.get("schedule"):
+        return None
+
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+    day_name = dt.strftime("%A").lower()
+    day_cfg  = availability["schedule"].get(day_name, {})
+
+    if not day_cfg.get("open", False):
+        return {"date": date_str, "day": day_name.capitalize(), "open": False, "free_slots": []}
+
+    if date_str in (availability.get("blocked_dates") or []):
+        return {"date": date_str, "day": day_name.capitalize(), "open": False,
+                "free_slots": [], "reason": "holiday/blocked"}
+
+    slot_min = int(availability.get("slot_duration", 30))
+    buffer   = int(availability.get("buffer_minutes", 0))
+    start_dt = datetime.strptime(f"{date_str} {day_cfg.get('start','09:00')}", "%Y-%m-%d %H:%M")
+    end_dt   = datetime.strptime(f"{date_str} {day_cfg.get('end','17:00')}", "%Y-%m-%d %H:%M")
+
+    all_slots: list[str] = []
+    cur = start_dt
+    while cur + timedelta(minutes=slot_min) <= end_dt:
+        all_slots.append(cur.strftime("%H:%M"))
+        cur += timedelta(minutes=slot_min + buffer)
+
+    booked: set[str] = set()
+    if data_db:
+        for t in (profile.dynamic_tables or []):
+            time_cols = [c["name"] for c in t.get("columns", [])
+                         if any(k in c["name"].lower() for k in ["time","date","appointment","booking","slot"])]
+            for col in time_cols:
+                safe_t = "".join(c for c in t["table_name"] if c.isalnum() or c == "_")
+                safe_c = "".join(c for c in col if c.isalnum() or c == "_")
+                try:
+                    rows = data_db.execute(
+                        text(f"SELECT CAST({safe_c} AS TEXT) FROM {safe_t} WHERE CAST({safe_c} AS TEXT) LIKE :p"),
+                        {"p": f"{date_str}%"}
+                    ).fetchall()
+                    for r in rows:
+                        if r[0]:
+                            booked.add(r[0][11:16] if len(r[0]) > 10 else r[0][:5])
+                except Exception:
+                    pass
+
+    free = [s for s in all_slots if s not in booked]
+    return {
+        "date": date_str,
+        "day": day_name.capitalize(),
+        "open": True,
+        "open_hours": f"{day_cfg.get('start')} – {day_cfg.get('end')}",
+        "free_slots": free,
+        "booked_slots": sorted(booked),
+    }
+
+
+def get_table_records(db: Session, table_name: str, limit: int = 200) -> list:
+    """Fetch all records from a dynamic table for admin display."""
+    safe_table = "".join(c for c in table_name if c.isalnum() or c == "_")
+    try:
+        res = db.execute(text(f"SELECT * FROM {safe_table} ORDER BY created_at DESC LIMIT {limit}"))
+        return [dict(r._mapping) for r in res]
+    except Exception:
+        return []
+
+
 def update_pdf_filename(db: Session, business_id: int, filename: str):
     profile = db.query(models.BusinessProfile).filter(
         models.BusinessProfile.id == business_id
@@ -169,12 +309,14 @@ def delete_business_profile(db: Session, business_id: int, user_id: int) -> bool
 
 # ── Dynamic Tables (DDL) ──────────────────────────────────────────────────────
 
-def create_dynamic_table(db: Session, table_name: str, columns: list, business_id: int) -> str:
-    """Create a business-specific SQL table namespaced with business_id."""
+def create_dynamic_table(db: Session, table_name: str, columns: list, business_id: int,
+                          external_engine=None) -> str:
+    """Create a business-specific SQL table, optionally on an external engine."""
     safe_name = "".join(c for c in table_name if c.isalnum() or c == "_")
     full_table_name = f"{safe_name}_{business_id}"
 
-    is_pg = db.bind.dialect.name == "postgresql"
+    target_engine = external_engine or db.bind
+    is_pg = target_engine.dialect.name == "postgresql"
     id_col = "id SERIAL PRIMARY KEY" if is_pg else "id INTEGER PRIMARY KEY AUTOINCREMENT"
     ts_type = "TIMESTAMP" if is_pg else "DATETIME"
 
@@ -189,8 +331,14 @@ def create_dynamic_table(db: Session, table_name: str, columns: list, business_i
 
     col_defs.append(f"created_at {ts_type} DEFAULT CURRENT_TIMESTAMP")
     sql = f"CREATE TABLE IF NOT EXISTS {full_table_name} ({', '.join(col_defs)})"
-    db.execute(text(sql))
-    db.commit()
+
+    if external_engine:
+        with external_engine.connect() as conn:
+            conn.execute(text(sql))
+            conn.commit()
+    else:
+        db.execute(text(sql))
+        db.commit()
     return full_table_name
 
 
@@ -205,8 +353,13 @@ def drop_dynamic_table(db: Session, table_name: str):
 
 # ── Generic Table Operations ──────────────────────────────────────────────────
 
-def generic_save(db: Session, table_name: str, session_id: str, data: dict) -> bool:
-    """Insert or update a row in a dynamic table, keyed by session_id."""
+def generic_save(db: Session, table_name: str, session_id: str, data: dict,
+                 always_insert: bool = False) -> bool:
+    """
+    Insert or update a row in a dynamic table.
+    - always_insert=True  → always INSERT (use for bookings; each booking is a separate row)
+    - always_insert=False → UPSERT by session_id (use for orders; updates the existing session row)
+    """
     safe_table = "".join(c for c in table_name if c.isalnum() or c == "_")
 
     is_pg = db.bind.dialect.name == "postgresql"
@@ -225,10 +378,13 @@ def generic_save(db: Session, table_name: str, session_id: str, data: dict) -> b
         if clean_key in existing_cols and clean_key != "session_id":
             safe_data[clean_key] = json.dumps(v) if isinstance(v, (list, dict)) else v
 
-    exists = db.execute(
-        text(f"SELECT 1 FROM {safe_table} WHERE session_id = :sid"),
-        {"sid": session_id}
-    ).fetchone()
+    if not always_insert:
+        exists = db.execute(
+            text(f"SELECT 1 FROM {safe_table} WHERE session_id = :sid"),
+            {"sid": session_id}
+        ).fetchone()
+    else:
+        exists = None
 
     if exists:
         set_clause = ", ".join(f"{k} = :{k}" for k in safe_data if k != "session_id")

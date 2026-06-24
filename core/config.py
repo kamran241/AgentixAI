@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     GROQ_API_KEY: str = ""
     ADMIN_PASSWORD: str = "admin@123"
+    DB_ENCRYPTION_KEY: str = ""  # Fernet key — generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
     class Config:
         env_file = ".env"

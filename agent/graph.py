@@ -10,7 +10,8 @@ load_dotenv()
 from .state import AgentState
 from .tools import (
     search_knowledge, validate_address, check_availability,
-    save_record, get_records, analyze_stats, get_customer_history
+    save_record, get_records, analyze_stats, get_customer_history,
+    get_available_slots,
 )
 
 
@@ -22,7 +23,7 @@ class Evaluation(BaseModel):
 # Tool groups — composed per business capabilities
 _BASE_TOOLS = [search_knowledge, get_records, get_customer_history]
 _ORDER_TOOLS = [save_record, analyze_stats]
-_BOOKING_TOOLS = [check_availability, save_record]
+_BOOKING_TOOLS = [get_available_slots, check_availability, save_record]
 _DELIVERY_TOOLS = [validate_address]
 
 
@@ -78,6 +79,35 @@ def _build_system_prompt(profile: dict, feedback: str = "") -> SystemMessage:
     )
     schema_section = _build_schema_section(profile)
 
+    # Build availability section
+    availability = profile.get("availability") or {}
+    if isinstance(availability, str):
+        import json as _json
+        try:
+            availability = _json.loads(availability)
+        except Exception:
+            availability = {}
+    schedule = availability.get("schedule") or {}
+    avail_lines = []
+    if schedule:
+        avail_lines.append("BUSINESS HOURS (the booking schedule set by the owner):")
+        for day in ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]:
+            day_cfg = schedule.get(day, {})
+            if day_cfg.get("open"):
+                avail_lines.append(f"  {day.capitalize()}: {day_cfg.get('start','09:00')} – {day_cfg.get('end','17:00')}")
+            else:
+                avail_lines.append(f"  {day.capitalize()}: CLOSED")
+        slot_min = availability.get("slot_duration", 30)
+        buffer   = availability.get("buffer_minutes", 0)
+        avail_lines.append(f"  Slot duration: {slot_min} minutes" + (f", {buffer} min buffer between slots" if buffer else ""))
+        blocked = availability.get("blocked_dates") or []
+        if blocked:
+            avail_lines.append(f"  Blocked/holiday dates: {', '.join(blocked)}")
+    avail_section = "\n".join(avail_lines)
+
+    # Must be defined before tool_instructions block
+    upcoming_slots = profile.get("upcoming_slots") or []
+
     tool_instructions = [
         "KNOWLEDGE FIRST: Use 'search_knowledge' to answer any question about services, menu, prices, or hours.",
         "RETURNING CUSTOMERS: When a customer gives their phone number, call 'get_customer_history' immediately.",
@@ -87,13 +117,25 @@ def _build_system_prompt(profile: dict, feedback: str = "") -> SystemMessage:
     if capabilities.get('has_orders'):
         tool_instructions.append(
             "ORDERS: Use 'analyze_stats' at the start of an order to suggest popular items. "
-            "When an order is ready, use 'save_record' to write it to the correct table."
+            "When an order is ready, use 'save_record' with always_insert=False to write it."
         )
     if capabilities.get('has_bookings'):
+        slots_note = (
+            "The REAL-TIME AVAILABILITY block above lists free slots for the next 7 days — use those directly. "
+            "For dates beyond 7 days call get_available_slots(date) first."
+            if upcoming_slots else
+            "Call get_available_slots(date) first to get genuine free slots — NEVER invent times."
+        )
         tool_instructions.append(
-            "BOOKINGS: You MUST call 'check_availability' before saving any booking. "
-            "Never confirm an appointment without verifying availability first. "
-            "Collect a specific Date and Time before checking."
+            f"BOOKINGS — follow this exact flow every time:\n"
+            f"  1. Ask what SERVICE/TYPE of appointment they need (e.g. Check-up, Cleaning, etc.).\n"
+            f"  2. If the business has multiple staff, ask for their PREFERENCE (e.g. which dentist).\n"
+            f"  3. Ask for their preferred DATE. {slots_note}\n"
+            f"  4. Show available slots for that date and let the customer CHOOSE one.\n"
+            f"  5. Collect: Full Name, Phone Number, Email Address.\n"
+            f"  6. Read back all details for CONFIRMATION: service, staff (if chosen), date, time, name, phone, email.\n"
+            f"  7. Only after customer confirms — call save_record(always_insert=True).\n"
+            f"  RESCHEDULE: If customer wants to change, collect the new date/time, re-confirm all details, then call save_record(always_insert=True) again with updated info."
         )
     if capabilities.get('has_delivery'):
         tool_instructions.append(
@@ -107,35 +149,89 @@ def _build_system_prompt(profile: dict, feedback: str = "") -> SystemMessage:
         if feedback else ""
     )
 
-    return SystemMessage(content=f"""You are a professional AI assistant for '{profile.get('name', 'a small business')}'.
+    custom_prompt = (profile.get("custom_prompt") or "").strip()
+
+    if custom_prompt:
+        intro = f"""{custom_prompt}
+
+---
+Business: {profile.get('name', 'a small business')} | Type: {profile.get('type', 'Unknown')}"""
+    else:
+        intro = f"""You are a professional AI assistant for '{profile.get('name', 'a small business')}'.
 Business Type: {profile.get('type', 'Unknown')}
-Description: {profile.get('description', '')}
+Description: {profile.get('description', '')}"""
+
+    # Build upcoming slots section (pre-computed, always accurate)
+    upcoming_slots = profile.get("upcoming_slots") or []
+    slots_lines = []
+    if upcoming_slots:
+        slots_lines.append("REAL-TIME AVAILABILITY — next 7 days (pre-fetched, 100% accurate):")
+        for day_info in upcoming_slots:
+            if not day_info.get("open"):
+                reason = day_info.get("reason", "closed")
+                slots_lines.append(f"  {day_info['date']} ({day_info['day']}): {reason.upper()}")
+            else:
+                free = day_info.get("free_slots", [])
+                booked = day_info.get("booked_slots", [])
+                hours = day_info.get("open_hours", "")
+                if free:
+                    slots_lines.append(
+                        f"  {day_info['date']} ({day_info['day']}) {hours}: "
+                        f"FREE → {', '.join(free)}"
+                        + (f" | BOOKED → {', '.join(booked)}" if booked else "")
+                    )
+                else:
+                    slots_lines.append(
+                        f"  {day_info['date']} ({day_info['day']}) {hours}: FULLY BOOKED"
+                        + (f" (booked: {', '.join(booked)})" if booked else "")
+                    )
+        slots_lines.append(
+            "  ↑ Use ONLY these slots when booking. "
+            "For dates beyond 7 days call get_available_slots(date)."
+        )
+    slots_section = "\n".join(slots_lines)
+
+    avail_block = f"\n{avail_section}\n" if avail_section else ""
+
+    slots_block = f"\n{slots_section}\n" if slots_section else ""
+
+    return SystemMessage(content=f"""{intro}
 
 BUSINESS RULES:
 {rules_text}
-
+{avail_block}{slots_block}
 {schema_section}
 
 TOOL USAGE:
 {tool_section}
 
-ALWAYS collect the customer's Name and Phone Number before saving any record.{feedback_section}""")
+ALWAYS collect Name, Phone Number, and Email Address before saving any booking or order record.
+
+CRITICAL — TOOL CALLS: You have real tools. NEVER write tool or function calls in your response text. Do NOT output <function=...>, <tool_call>, or raw JSON blocks. Invoke tools silently through the API only.
+
+RESPONSE STYLE: Be concise and conversational. Answer in 1-3 sentences. Only list details when the customer specifically asks.{feedback_section}""")
 
 
 def _build_critic_prompt(profile: dict, user_query: str, last_msg: str, tools_called: list) -> str:
     capabilities = profile.get("capabilities") or {}
 
     criteria = [
-        "INFO REQUESTS: If the user asks for information only, the response is VALID if it answers the question. Do NOT require Name/Phone for info-only queries.",
-        "CUSTOMER INFO: Name and Phone are REQUIRED before any record is saved.",
-        "TOOL USE: The agent must use 'save_record' (not describe) to actually save data.",
+        "INFO REQUESTS: If the user asks for information only, the response is VALID if it answers the question. Do NOT require customer info for info-only queries.",
+        "CUSTOMER INFO: Name, Phone AND Email are ALL REQUIRED before any record is saved.",
+        "TOOL USE: The agent must use 'save_record' (not just describe) to actually save data.",
     ]
     if capabilities.get('has_orders'):
         criteria.append("UPSELLING: Suggest a popular item when the user is ordering.")
     if capabilities.get('has_bookings'):
         criteria.append(
-            "BOOKING SAFETY: 'check_availability' MUST be called before 'save_record' for any booking. "
-            "Confirming without checking is INVALID."
+            "BOOKING FLOW: The agent must follow all 7 steps: ask service type → ask staff preference → "
+            "show available slots → customer picks slot → collect Name+Phone+Email → confirm all details → save_record(always_insert=True). "
+            "Skipping any step is INVALID. Confirming without collecting email is INVALID."
+        )
+        criteria.append(
+            "RESCHEDULE: If the customer wants to change their booking, the agent must collect new date/time, "
+            "re-confirm all details, and call save_record(always_insert=True) again. "
+            "Saying 'rescheduled' without calling save_record is INVALID."
         )
     if capabilities.get('has_delivery'):
         criteria.append("DELIVERY: 'validate_address' must be called before saving a delivery order.")
