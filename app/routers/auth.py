@@ -63,3 +63,45 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserResponse)
 def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+class UpdateProfileRequest(BaseModel):
+    name: str
+    email: EmailStr
+
+
+class UpdatePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.put("/profile", response_model=UserResponse)
+def update_profile(
+    body: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if body.email != current_user.email:
+        existing = crud.get_user_by_email(db, body.email)
+        if existing and existing.id != current_user.id:
+            raise HTTPException(status_code=409, detail="Email already in use")
+        current_user.email = body.email
+    current_user.name = body.name
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
+@router.put("/password", status_code=204)
+def update_password(
+    body: UpdatePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from core.security import verify_password, hash_password
+    if not verify_password(body.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    current_user.hashed_password = hash_password(body.new_password)
+    db.commit()

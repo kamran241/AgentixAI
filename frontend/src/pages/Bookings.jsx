@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Zap, Building2, Calendar, LogOut, Search, X,
-  RefreshCw, ChevronRight, ChevronLeft, Clock, User, Phone, Mail,
+  RefreshCw, ChevronRight, ChevronLeft, Clock, User, Phone, Mail, Settings,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
@@ -81,6 +81,9 @@ export default function Bookings() {
           </Link>
           <Link to="/bookings" className="shell-nav-item active" title="Bookings">
             <Calendar size={16}/><span className="nav-label">Bookings</span>
+          </Link>
+          <Link to="/settings" className="shell-nav-item" title="Settings">
+            <Settings size={16}/><span className="nav-label">Settings</span>
           </Link>
         </nav>
         <div className="shell-sidebar-bottom">

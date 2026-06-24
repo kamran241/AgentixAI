@@ -4,7 +4,7 @@ import {
   Zap, ArrowLeft, Bot, Building2, Database, Code2, MessageSquare,
   Copy, Check, Trash2, ExternalLink, Package, Calendar, Truck, LogOut,
   Palette, FileText, Upload, Save, X, User, Clock, Ban, Plus,
-  ChevronLeft, ChevronRight, Table2, ClipboardList, Sparkles,
+  ChevronLeft, ChevronRight, Table2, ClipboardList, Sparkles, Settings,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
@@ -533,6 +533,9 @@ export default function BusinessDetail() {
           </Link>
           <Link to="/bookings" className="shell-nav-item" title="Bookings">
             <Calendar size={16}/><span className="nav-label">Bookings</span>
+          </Link>
+          <Link to="/settings" className="shell-nav-item" title="Settings">
+            <Settings size={16}/><span className="nav-label">Settings</span>
           </Link>
         </nav>
         <div className="shell-sidebar-bottom">

@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import {
   Zap, Plus, LogOut, Building2, Calendar, Package, Truck,
   FileUp, X, ChevronRight, ChevronLeft, MessageSquare, Database, Bot,
-  Search, Activity, Layers, Sparkles, ArrowUpRight, BarChart2,
+  Search, Activity, Layers, Sparkles, ArrowUpRight, BarChart2, Settings,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
@@ -458,6 +458,9 @@ export default function Dashboard() {
           </Link>
           <Link to="/bookings" className="shell-nav-item" title="Bookings">
             <Calendar size={16}/><span className="nav-label">Bookings</span>
+          </Link>
+          <Link to="/settings" className="shell-nav-item" title="Settings">
+            <Settings size={16}/><span className="nav-label">Settings</span>
           </Link>
         </nav>
 

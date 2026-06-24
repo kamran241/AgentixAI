@@ -7,6 +7,7 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import BusinessDetail from './pages/BusinessDetail';
 import Bookings from './pages/Bookings';
+import Settings from './pages/Settings';
 import ChatPage from './pages/ChatPage';
 import WidgetChat from './pages/WidgetChat';
 import Privacy from './pages/Privacy';
@@ -32,6 +33,9 @@ function AppRoutes() {
       } />
       <Route path="/bookings" element={
         <ProtectedRoute><Bookings /></ProtectedRoute>
+      } />
+      <Route path="/settings" element={
+        <ProtectedRoute><Settings /></ProtectedRoute>
       } />
       <Route path="/chat" element={
         <ProtectedRoute><ChatPage /></ProtectedRoute>
