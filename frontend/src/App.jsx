@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import BusinessDetail from './pages/BusinessDetail';
 import ChatPage from './pages/ChatPage';
 import WidgetChat from './pages/WidgetChat';
+import Privacy from './pages/Privacy';
 
 function RootRedirect() {
   const { user } = useAuth();
@@ -21,6 +22,7 @@ function AppRoutes() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/widget-chat" element={<WidgetChat />} />
+      <Route path="/privacy" element={<Privacy />} />
       <Route path="/dashboard" element={
         <ProtectedRoute><Dashboard /></ProtectedRoute>
       } />

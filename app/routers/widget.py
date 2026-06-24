@@ -11,17 +11,29 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 router = APIRouter(prefix="/widget", tags=["widget"])
 
 
+DEFAULT_WIDGET_CONFIG = {
+    "bot_name": "AI Assistant",
+    "primary_color": "#6366f1",
+    "bg_color": "#0b0f1a",
+    "welcome_message": "Hi! How can I help you today?",
+    "position": "right",
+    "logo_url": None,
+}
+
+
 @router.get("/{token}/info")
 def widget_info(token: str, db: Session = Depends(get_db)):
-    """Public — returns business info for the widget UI."""
+    """Public — returns business info + widget config for the widget UI."""
     profile = crud.get_business_by_token(db, token)
     if not profile or not profile.name:
         raise HTTPException(status_code=404, detail="Widget not found")
+    widget_cfg = {**DEFAULT_WIDGET_CONFIG, **(profile.widget_config or {})}
     return {
         "name": profile.name,
         "type": profile.business_type,
         "description": profile.description,
         "capabilities": profile.capabilities or {},
+        "widget_config": widget_cfg,
     }
 
 

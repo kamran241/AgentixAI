@@ -129,6 +129,30 @@ def get_business_by_id(db: Session, business_id: int) -> models.BusinessProfile 
     ).first()
 
 
+def update_widget_config(db: Session, business_id: int, user_id: int, config: dict) -> models.BusinessProfile | None:
+    from sqlalchemy.orm.attributes import flag_modified
+    profile = db.query(models.BusinessProfile).filter(
+        models.BusinessProfile.id == business_id,
+        models.BusinessProfile.user_id == user_id,
+    ).first()
+    if not profile:
+        return None
+    profile.widget_config = dict(config)
+    flag_modified(profile, "widget_config")
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def update_pdf_filename(db: Session, business_id: int, filename: str):
+    profile = db.query(models.BusinessProfile).filter(
+        models.BusinessProfile.id == business_id
+    ).first()
+    if profile:
+        profile.pdf_filename = filename
+        db.commit()
+
+
 def delete_business_profile(db: Session, business_id: int, user_id: int) -> bool:
     profile = db.query(models.BusinessProfile).filter(
         models.BusinessProfile.id == business_id,

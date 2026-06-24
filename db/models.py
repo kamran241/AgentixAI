@@ -24,6 +24,8 @@ class BusinessProfile(Base):
     config = Column(JSON)           # extracted business rules
     capabilities = Column(JSON)     # {has_orders, has_bookings, has_delivery}
     dynamic_tables = Column(JSON)   # [{table_name, purpose, columns:[{name,type}]}]
+    widget_config = Column(JSON, default={})   # {bot_name, primary_color, welcome_message, logo_url, position}
+    pdf_filename = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
 

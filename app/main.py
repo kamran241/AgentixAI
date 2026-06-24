@@ -1,8 +1,10 @@
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from db import models, database
 from app.routers import admin as admin_router
@@ -26,6 +28,10 @@ app.add_middleware(
 )
 
 models.Base.metadata.create_all(bind=database.engine)
+
+os.makedirs("./data/logos", exist_ok=True)
+os.makedirs("./data/pdfs", exist_ok=True)
+app.mount("/uploads/logos", StaticFiles(directory="./data/logos"), name="logos")
 
 
 def _seed_default_user():

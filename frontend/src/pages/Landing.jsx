@@ -182,6 +182,13 @@ export default function Landing() {
           <span>Agentix</span>
         </div>
         <p className="footer-copy">Open source AI booking platform. MIT License.</p>
+        <div className="footer-bottom">
+          <span>© 2025 Agentix</span>
+          <div style={{ display: 'flex', gap: '1.5rem' }}>
+            <Link to="/privacy" className="footer-link">Privacy Policy</Link>
+            <a href="https://github.com/kamran240/AgentixAI" target="_blank" rel="noreferrer" className="footer-link">GitHub</a>
+          </div>
+        </div>
       </footer>
     </div>
   );

@@ -5,7 +5,8 @@
       "PowerShell(New-Item -ItemType Directory -Force -Path \"d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\src\\\\pages\")",
       "PowerShell(New-Item -ItemType Directory -Force -Path \"d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\src\\\\context\")",
       "PowerShell(New-Item -ItemType Directory -Force -Path \"d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\src\\\\components\")",
-      "PowerShell(New-Item -ItemType Directory -Force -Path \"d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\public\")"
+      "PowerShell(New-Item -ItemType Directory -Force -Path \"d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\public\")",
+      "Read(//d/agentixAi/AgentixAII/frontend/src/pages/**)"
     ]
   }
 }

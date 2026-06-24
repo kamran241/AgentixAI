@@ -8,17 +8,19 @@ from db.database import engine, SessionLocal
 
 def migrate():
     with engine.connect() as conn:
-        # Check existing columns
         result = conn.execute(text("PRAGMA table_info(business_profiles)"))
         existing = {row[1] for row in result}
 
-        if "user_id" not in existing:
-            conn.execute(text("ALTER TABLE business_profiles ADD COLUMN user_id INTEGER"))
-            print("✓ Added user_id column")
-
-        if "public_token" not in existing:
-            conn.execute(text("ALTER TABLE business_profiles ADD COLUMN public_token TEXT"))
-            print("✓ Added public_token column")
+        new_cols = {
+            "user_id": "INTEGER",
+            "public_token": "TEXT",
+            "widget_config": "JSON",
+            "pdf_filename": "TEXT",
+        }
+        for col, col_type in new_cols.items():
+            if col not in existing:
+                conn.execute(text(f"ALTER TABLE business_profiles ADD COLUMN {col} {col_type}"))
+                print(f"✓ Added {col} column")
 
         conn.commit()
 

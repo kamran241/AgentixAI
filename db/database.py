@@ -7,14 +7,27 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-USE_SQLITE = os.getenv("USE_SQLITE", "false").lower() == "true"
 
-if not DATABASE_URL or USE_SQLITE:
+# Fall back to SQLite only when no DATABASE_URL is provided
+if not DATABASE_URL:
     DATABASE_URL = "sqlite:///./sqlite.db"
 
-connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+# Neon (and some other Postgres hosts) send postgres:// — SQLAlchemy needs postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+_is_sqlite = DATABASE_URL.startswith("sqlite")
+
+if _is_sqlite:
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,      # drop stale connections automatically
+        pool_size=5,
+        max_overflow=10,
+    )
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
