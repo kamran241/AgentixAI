@@ -1,22 +1,21 @@
+import os
 from fastapi import APIRouter, Request, Form, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from db.database import get_db
-from db import models
+from db import models, crud
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-
 templates = Jinja2Templates(directory="templates")
 
 ADMIN_COOKIE_NAME = "admin_logged_in"
-ADMIN_PASSWORD = "123456789"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "changeme")
 
 
 def get_current_admin(request: Request):
-    is_admin = request.cookies.get(ADMIN_COOKIE_NAME)
-    if is_admin != "true":
+    if request.cookies.get(ADMIN_COOKIE_NAME) != "true":
         raise HTTPException(status_code=status.HTTP_302_FOUND, headers={"Location": "/admin/login"})
     return "admin"
 
@@ -36,7 +35,6 @@ async def admin_login(request: Request, password: str = Form(...)):
             {"request": request, "error": "Invalid password"},
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
-
     response = RedirectResponse(url="/admin", status_code=status.HTTP_302_FOUND)
     response.set_cookie(ADMIN_COOKIE_NAME, "true", httponly=True)
     return response
@@ -55,66 +53,83 @@ async def admin_dashboard(
     db: Session = Depends(get_db),
     admin: str = Depends(get_current_admin),
 ):
-    """Unified admin dashboard: show counts and recent orders/appointments."""
-    orders_count = db.query(models.Order).count()
-    appointments_count = db.query(models.Appointment).count()
+    profile = db.query(models.BusinessProfile).filter(
+        models.BusinessProfile.name != ""
+    ).order_by(models.BusinessProfile.id.desc()).first()
 
-    recent_orders = (
-        db.query(models.Order)
-        .order_by(models.Order.created_at.desc())
-        .limit(10)
-        .all()
-    )
-    recent_appointments = (
-        db.query(models.Appointment)
-        .order_by(models.Appointment.appointment_time.desc())
-        .limit(10)
-        .all()
-    )
+    # Build per-table stats and recent rows for the active business
+    tables_data = []
+    if profile and profile.dynamic_tables:
+        for table_info in profile.dynamic_tables:
+            table_name = table_info['table_name']
+            row_count = crud.get_table_row_count(db, table_name)
+            recent_rows = []
+            columns = []
+            try:
+                recent_rows = crud.generic_query(db, table_name, limit=5)
+                columns = list(recent_rows[0].keys()) if recent_rows else [
+                    c['name'] for c in table_info.get('columns', [])
+                ]
+            except Exception:
+                pass
+            tables_data.append({
+                "name": table_name,
+                "purpose": table_info.get("purpose", ""),
+                "row_count": row_count,
+                "columns": columns,
+                "recent_rows": recent_rows,
+            })
 
-    # Optional: dynamic table info if present
-    profile = db.query(models.BusinessProfile).first()
+    total_records = sum(t["row_count"] for t in tables_data)
 
     return templates.TemplateResponse(
         "admin_dashboard.html",
         {
             "request": request,
-            "orders_count": orders_count,
-            "appointments_count": appointments_count,
-            "recent_orders": recent_orders,
-            "recent_appointments": recent_appointments,
             "profile": profile,
+            "tables_data": tables_data,
+            "total_records": total_records,
         },
     )
 
 
-@router.get("/orders")
-async def admin_orders(
+@router.get("/tables/{table_name}")
+async def admin_table_view(
     request: Request,
+    table_name: str,
     db: Session = Depends(get_db),
     admin: str = Depends(get_current_admin),
 ):
-    """Read-only professional order listing view."""
-    orders = db.query(models.Order).order_by(models.Order.id.desc()).all()
-    return templates.TemplateResponse(
-        "admin_orders.html",
-        {"request": request, "orders": orders},
-    )
+    """Full view of all rows in a specific dynamic table."""
+    profile = db.query(models.BusinessProfile).filter(
+        models.BusinessProfile.name != ""
+    ).order_by(models.BusinessProfile.id.desc()).first()
 
+    # Validate table belongs to this business
+    table_info = None
+    if profile and profile.dynamic_tables:
+        table_info = next(
+            (t for t in profile.dynamic_tables if t['table_name'] == table_name), None
+        )
 
-@router.get("/appointments")
-async def admin_appointments(
-    request: Request,
-    db: Session = Depends(get_db),
-    admin: str = Depends(get_current_admin),
-):
-    """Read-only clinical bookings/appointments view."""
-    appointments = (
-        db.query(models.Appointment)
-        .order_by(models.Appointment.appointment_time.desc())
-        .all()
-    )
+    if not table_info:
+        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found.")
+
+    rows = []
+    columns = []
+    try:
+        rows = crud.generic_query(db, table_name, limit=200)
+        columns = list(rows[0].keys()) if rows else [c['name'] for c in table_info.get('columns', [])]
+    except Exception as e:
+        rows = []
+
     return templates.TemplateResponse(
-        "admin_appointments.html",
-        {"request": request, "appointments": appointments},
+        "admin_table.html",
+        {
+            "request": request,
+            "profile": profile,
+            "table_info": table_info,
+            "columns": columns,
+            "rows": rows,
+        },
     )

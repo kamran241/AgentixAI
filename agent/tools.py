@@ -1,25 +1,64 @@
+import contextvars
+from typing import Optional
+
 from langchain_core.tools import tool
-from rag.engine import RAGEngine
 from db.database import SessionLocal
 from db import crud, models
-import json
-from datetime import datetime
+from sqlalchemy import text
 
 from rag.instance import rag_engine
 from geopy.geocoders import Nominatim
 from geopy.exc import GeopyError
 
+# Per-request context variable — set in app/main.py before invoking the graph
+current_business_id: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    'current_business_id', default=None
+)
+
+
+def _get_business_tables(db, business_id: int) -> list:
+    """Return the list of dynamic_tables metadata for a business."""
+    if not business_id:
+        return []
+    profile = db.query(models.BusinessProfile).filter(
+        models.BusinessProfile.id == business_id
+    ).first()
+    return profile.dynamic_tables or [] if profile else []
+
+
+def _validate_table(db, table_name: str, business_id: int) -> bool:
+    """Make sure the table_name belongs to the current business."""
+    tables = _get_business_tables(db, business_id)
+    return any(t['table_name'] == table_name for t in tables)
+
+
+# ── Knowledge ────────────────────────────────────────────────────────────────
+
+@tool
+def search_knowledge(query: str):
+    """Search the business PDF knowledge base for menu, pricing, services, hours, or policies."""
+    db = SessionLocal()
+    biz_id = current_business_id.get()
+    try:
+        context, docs = rag_engine.query_knowledge(query, biz_id)
+        sources = [doc.metadata.get("page", 0) for doc in docs]
+        crud.create_audit_log(
+            db, "knowledge_retrieved",
+            {"query": query, "sources": sources, "snippet": context[:200]},
+            "system", business_id=biz_id
+        )
+        return {"context": context, "sources": sources}
+    finally:
+        db.close()
+
+
+# ── Address Validation ────────────────────────────────────────────────────────
+
 @tool
 def validate_address(address: str):
-    """
-    Check if a physical address exists and is valid using OpenStreetMap (FREE). 
-    Use this to verify delivery addresses or business locations.
-    It validates postal codes and city/street matches (e.g. '78 front street Toronto M4K 6B2').
-    """
+    """Validate a delivery address using OpenStreetMap. Use before finalizing any delivery order."""
     try:
-        # User-agent is required by Nominatim
         geolocator = Nominatim(user_agent="bizbot_validator")
-        # Global validation (removed country_codes restriction)
         location = geolocator.geocode(address, addressdetails=True)
         if location:
             details = location.raw.get('address', {})
@@ -34,280 +73,163 @@ def validate_address(address: str):
     except GeopyError:
         return {"valid": False, "message": "Validation service temporarily unavailable."}
 
-@tool
-def search_knowledge(query: str):
-    """Search the business PDF for information about menu, pricing, services, hours, or policies."""
-    db = SessionLocal()
-    try:
-        context, docs = rag_engine.query_knowledge(query)
-        sources = [doc.metadata.get("page", 0) for doc in docs]
-        
-        # Log the retrieval for audit transparency
-        crud.create_audit_log(db, "knowledge_retrieved", {"query": query, "sources": sources, "context_snippet": context[:200]}, "system")
-        
-        return {"context": context, "sources": sources}
-    finally:
-        db.close()
+
+# ── Availability Check ────────────────────────────────────────────────────────
 
 @tool
-def update_cart(items: list[dict], session_id: str):
-    """Update the user's current order/cart. 'items' should be a list of dicts with 'name', 'quantity', 'options'."""
-    # In a real app, this might update a temporary state in DB
-    # For now, we return it to the agent to manage in state
-    return {"status": "updated", "current_cart": items}
-
-@tool
-def check_availability(resource_name: str, requested_time: str):
-    """Check if a resource (doctor, table, cosmetician) is available at a given time. time format: YYYY-MM-DD HH:MM."""
-    db = SessionLocal()
-    try:
-        requested_dt = datetime.fromisoformat(requested_time)
-        # Check for exact collision or overlapping status
-        conflict = db.query(models.Appointment).filter(
-            models.Appointment.service_name == resource_name,
-            models.Appointment.status == "booked",
-            models.Appointment.appointment_time == requested_dt
-        ).first()
-
-        if conflict:
-            return {
-                "available": False, 
-                "message": f"'{resource_name}' is already booked at {requested_time}. Please suggest a different time."
-            }
-        
-        return {"available": True, "message": f"'{resource_name}' is available at {requested_time}"}
-    finally:
-        db.close()
-
-@tool
-def finalize_order(session_id: str, cart: list, total_price: float, customer_info: dict):
-    """Finalize and save a product or service order to the database. If an order already exists for this session, it will be updated."""
-    db = SessionLocal()
-    try:
-        session_id = str(session_id)
-        if not crud.get_session(db, session_id):
-            crud.create_session(db, session_id)
-            
-        # 1. UPSERT Logic - Check for existing order in this session
-        order = db.query(models.Order).filter(models.Order.session_id == session_id).first()
-        if order:
-            order = crud.update_order(db, order.id, total_price, {"items": cart, "customer": customer_info})
-            action = "order_updated"
-        else:
-            order = crud.create_order(db, session_id, total_price, {"items": cart, "customer": customer_info})
-            action = "order_confirmed"
-        
-        # 2. Dynamic Table Injection (Specific)
-        profile = db.query(models.BusinessProfile).first()
-        if profile and profile.dynamic_table_name:
-            details = {**customer_info, "total_price": total_price}
-            for item in cart:
-                details.update(item)
-            
-            try:
-                # Check if session exists in dynamic table to update it
-                from sqlalchemy import text
-                table = profile.dynamic_table_name
-                # Simple check for existing session_id in dynamic table
-                exists = db.execute(text(f"SELECT 1 FROM {table} WHERE session_id = :sid"), {"sid": session_id}).fetchone()
-                
-                if exists:
-                    # Generic Update for Dynamic Table
-                    cols = details.keys()
-                    set_clause = ", ".join([f"{c} = :{c}" for c in cols if c != "session_id"])
-                    sql = f"UPDATE {table} SET {set_clause} WHERE session_id = :session_id"
-                    db.execute(text(sql), {**details, "session_id": session_id})
-                    db.commit()
-                else:
-                    crud.insert_dynamic_data(db, table, session_id, details)
-            except Exception as e:
-                print(f"Dynamic table operation failed: {e}")
-            
-        crud.create_audit_log(db, action, {"order_id": order.id, "total": total_price, "table": profile.dynamic_table_name if profile else "none"}, session_id)
-        return {"status": "success", "order_id": order.id, "message": f"Order {order.id} {action.split('_')[1]} and saved to specialized table!"}
-    finally:
-        db.close()
-
-@tool
-def create_booking(session_id: str, resource_name: str, time_str: str, customer_name: str, customer_phone: str, additional_details: dict = None):
-    """Create a time-based booking/appointment. 'additional_details' is a dict for business-specific fields (e.g. laundry weight, reason for visit)."""
-    db = SessionLocal()
-    try:
-        session_id = str(session_id)
-        if not crud.get_session(db, session_id):
-            crud.create_session(db, session_id)
-
-        book_time = datetime.fromisoformat(time_str)
-        
-        # 1. CHECK CONFLICTS FIRST (Safety)
-        conflict = db.query(models.Appointment).filter(
-            models.Appointment.service_name == resource_name,
-            models.Appointment.status == "booked",
-            models.Appointment.appointment_time == book_time
-        ).first()
-        
-        if conflict:
-            return {
-                "status": "error",
-                "message": f"CRITICAL: '{resource_name}' was just booked by someone else at {time_str}. Please ask the user for another time."
-            }
-
-        # 2. Save to Master Appointment Table
-        apt = crud.create_appointment(db, session_id, resource_name, book_time, customer_name, customer_phone)
-        
-        # 2. Dynamic Table Injection (The Flexible Part)
-        profile = db.query(models.BusinessProfile).first()
-        if profile and profile.dynamic_table_name:
-            details = {
-                "customer_name": customer_name,
-                "customer_phone": customer_phone,
-                "service_name": resource_name,
-                "appointment_time": time_str
-            }
-            if additional_details:
-                details.update(additional_details)
-            
-            try:
-                crud.insert_dynamic_data(db, profile.dynamic_table_name, session_id, details)
-            except Exception as e:
-                print(f"Dynamic booking insert failed: {e}")
-
-        crud.create_audit_log(db, "booking_created", {"id": apt.id, "resource": resource_name, "time": time_str, "table": profile.dynamic_table_name if profile else "none"}, session_id)
-        return {"status": "success", "booking_id": apt.id, "message": f"Booking for {resource_name} confirmed at {time_str}. Details saved to your custom '{profile.dynamic_table_name if profile else 'master'}' table."}
-    finally:
-        db.close()
-
-@tool
-def modify_booking(session_id: str, booking_id: int, new_time_str: str):
-    """Reschedule or change the time of an existing booking or reservation."""
-    db = SessionLocal()
-    try:
-        new_time = datetime.fromisoformat(new_time_str)
-        apt = db.query(models.Appointment).filter(models.Appointment.id == booking_id).first()
-        if apt:
-            apt.appointment_time = new_time
-            db.commit()
-            crud.create_audit_log(db, "booking_modified", {"id": booking_id, "new_time": new_time_str}, session_id)
-            return {"status": "success", "message": f"Booking {booking_id} moved to {new_time_str}"}
-        return {"status": "error", "message": "Booking not found"}
-    finally:
-        db.close()
-
-@tool
-def cancel_booking(session_id: str, booking_id: int):
-    """Cancel any existing booking, reservation, or appointment."""
-    db = SessionLocal()
-    try:
-        apt = crud.update_appointment_status(db, booking_id, "cancelled")
-        if apt:
-            crud.create_audit_log(db, "booking_cancelled", {"id": booking_id}, session_id)
-            return {"status": "success", "message": f"Booking {booking_id} has been cancelled."}
-        return {"status": "error", "message": "Booking not found"}
-    finally:
-        db.close()
-
-@tool
-def update_order(session_id: str, order_id: int, cart: list, total_price: float, customer_info: dict):
-    """Modify an existing order that was already finalized."""
-    db = SessionLocal()
-    try:
-        updated = crud.update_order(db, order_id, total_price, {"items": cart, "customer": customer_info})
-        if updated:
-            # Also update dynamic table if exists
-            profile = db.query(models.BusinessProfile).first()
-            if profile and profile.dynamic_table_name:
-                details = {**customer_info, "total_price": total_price}
-                for item in cart: details.update(item)
-                try: crud.insert_dynamic_data(db, profile.dynamic_table_name, session_id, details)
-                except: pass
-            
-            crud.create_audit_log(db, "order_updated", {"order_id": order_id}, session_id)
-            return {"status": "success", "message": f"Order {order_id} has been updated."}
-        return {"status": "error", "message": "Order not found."}
-    finally:
-        db.close()
-
-@tool
-def cancel_order(session_id: str, order_id: int):
-    """Completely remove an existing order from the database."""
-    db = SessionLocal()
-    try:
-        success = crud.delete_order(db, order_id)
-        if success:
-            crud.create_audit_log(db, "order_deleted", {"order_id": order_id}, session_id)
-            return {"status": "success", "message": f"Order {order_id} has been deleted."}
-        return {"status": "error", "message": "Order not found."}
-    finally:
-        db.close()
-
-@tool
-def analyze_business_stats():
+def check_availability(table_name: str, resource_column: str, resource_value: str,
+                       time_column: str, requested_time: str):
     """
-    Requirement 75: Analyze historical orders to find 'popular' items or common combinations.
-    Use this to suggest the best-selling food/services to a user.
+    Check if a resource (doctor, room, stylist) is available at a given time.
+    Queries the specified table to detect conflicts.
+    - table_name: the booking/appointment table (from the schema)
+    - resource_column: column that identifies the resource (e.g. 'dentist_name', 'room_type')
+    - resource_value: the specific resource to check (e.g. 'Dr. Smith', 'Suite')
+    - time_column: column that stores the time (e.g. 'appointment_time')
+    - requested_time: ISO format datetime string (YYYY-MM-DD HH:MM)
     """
     db = SessionLocal()
+    biz_id = current_business_id.get()
     try:
-        # Simple frequency analysis of ordered items
-        orders = db.query(models.Order).all()
-        item_counts = {}
-        
-        for order in orders:
-            details = order.order_details or {}
-            items = details.get('items', [])
-            for item in items:
-                name = item.get('name', 'Unknown')
-                item_counts[name] = item_counts.get(name, 0) + 1
-        
-        # Sort by popularity
-        sorted_items = sorted(item_counts.items(), key=lambda x: x[1], reverse=True)
-        popular_items = [name for name, count in sorted_items[:3]]
-        
+        if not _validate_table(db, table_name, biz_id):
+            return {"available": False, "message": f"Table '{table_name}' not found for this business."}
+
+        safe_table = "".join(c for c in table_name if c.isalnum() or c == "_")
+        safe_res_col = "".join(c for c in resource_column if c.isalnum() or c == "_")
+        safe_time_col = "".join(c for c in time_column if c.isalnum() or c == "_")
+
+        result = db.execute(
+            text(f"SELECT 1 FROM {safe_table} WHERE {safe_res_col} = :resource AND {safe_time_col} = :t_time"),
+            {"resource": resource_value, "t_time": requested_time}
+        ).fetchone()
+
+        if result:
+            return {
+                "available": False,
+                "message": f"'{resource_value}' is already booked at {requested_time}. Please suggest a different time."
+            }
+        return {"available": True, "message": f"'{resource_value}' is available at {requested_time}."}
+    finally:
+        db.close()
+
+
+# ── Generic Record Save ───────────────────────────────────────────────────────
+
+@tool
+def save_record(table_name: str, record_data: dict, session_id: str):
+    """
+    Save or update a record in any business table.
+    Use this to store orders, bookings, customer info, or any business data.
+    - table_name: exact table name from the schema (e.g. 'pizza_orders_1')
+    - record_data: dict of column_name -> value pairs matching the table schema
+    - session_id: current session ID to link the record to this conversation
+    """
+    db = SessionLocal()
+    biz_id = current_business_id.get()
+    try:
+        if not _validate_table(db, table_name, biz_id):
+            return {"status": "error", "message": f"Table '{table_name}' not found for this business."}
+
+        crud.generic_save(db, table_name, session_id, record_data)
+        crud.create_audit_log(
+            db, "record_saved",
+            {"table": table_name, "data_keys": list(record_data.keys())},
+            session_id, business_id=biz_id
+        )
+        return {"status": "success", "message": f"Record saved to '{table_name}'."}
+    finally:
+        db.close()
+
+
+# ── Generic Record Read ───────────────────────────────────────────────────────
+
+@tool
+def get_records(table_name: str, filters: dict = None, limit: int = 10):
+    """
+    Read records from any business table.
+    Use to check order status, look up a booking, or retrieve history.
+    - table_name: exact table name from the schema
+    - filters: optional dict of {column: value} to filter results (e.g. {'session_id': '...'})
+    - limit: max number of rows to return (default 10)
+    """
+    db = SessionLocal()
+    biz_id = current_business_id.get()
+    try:
+        if not _validate_table(db, table_name, biz_id):
+            return {"status": "error", "message": f"Table '{table_name}' not found for this business."}
+
+        rows = crud.generic_query(db, table_name, filters=filters, limit=limit)
+        return {"status": "success", "rows": rows, "count": len(rows)}
+    finally:
+        db.close()
+
+
+# ── Stats / Upsell ────────────────────────────────────────────────────────────
+
+@tool
+def analyze_stats(table_name: str, group_column: str):
+    """
+    Count occurrences of each value in a column to find the most popular items or services.
+    Use at the start of an order interaction to suggest top sellers.
+    - table_name: exact table name from the schema
+    - group_column: column to count by (e.g. 'item_name', 'service_type')
+    """
+    db = SessionLocal()
+    biz_id = current_business_id.get()
+    try:
+        if not _validate_table(db, table_name, biz_id):
+            return {"popular": [], "message": f"Table '{table_name}' not found."}
+
+        safe_table = "".join(c for c in table_name if c.isalnum() or c == "_")
+        safe_col = "".join(c for c in group_column if c.isalnum() or c == "_")
+
+        res = db.execute(text(
+            f"SELECT {safe_col}, COUNT(*) as cnt FROM {safe_table} "
+            f"WHERE {safe_col} IS NOT NULL GROUP BY {safe_col} ORDER BY cnt DESC LIMIT 5"
+        ))
+        rows = res.fetchall()
+        popular = [r[0] for r in rows]
         return {
-            "popular_items": popular_items,
-            "message": f"Based on order history, the most popular items are: {', '.join(popular_items)}."
+            "popular": popular,
+            "message": f"Most popular: {', '.join(popular)}." if popular else "No data yet."
         }
     finally:
         db.close()
 
-@tool
-def get_order_status(order_id: int):
-    """Check the status of an existing order."""
-    db = SessionLocal()
-    try:
-        order = db.query(models.Order).filter(models.Order.id == order_id).first()
-        if order:
-            return {"status": order.status, "details": order.order_details}
-        return {"status": "not_found"}
-    finally:
-        db.close()
+
+# ── Customer History ──────────────────────────────────────────────────────────
 
 @tool
 def get_customer_history(phone_number: str):
     """
-    Requirement 20/48: Retrieve past orders and appointments for a customer using their phone number.
-    Use this to 'recognize' a returning customer and provide personalized service or recommendations.
+    Find all records for a returning customer across all business tables using their phone number.
+    Call this whenever a customer provides their phone number.
     """
     db = SessionLocal()
+    biz_id = current_business_id.get()
     try:
-        # Search across all sessions for this phone number
-        sessions = db.query(models.Session).filter(models.Session.customer_phone == phone_number).all()
-        session_ids = [s.id for s in sessions]
-        
-        orders = db.query(models.Order).filter(models.Order.session_id.in_(session_ids)).all()
-        appointments = db.query(models.Appointment).filter(models.Appointment.customer_phone == phone_number).all()
-        
-        history = {
-            "order_count": len(orders),
-            "appointment_count": len(appointments),
-            "past_orders": [{"id": o.id, "total": o.total_price, "details": o.order_details} for o in orders],
-            "past_appointments": [{"id": a.id, "service": a.service_name, "time": a.appointment_time.isoformat()} for a in appointments]
-        }
-        
+        tables = _get_business_tables(db, biz_id)
+        all_records = {}
+
+        for table_info in tables:
+            table_name = table_info['table_name']
+            columns = [c['name'] for c in table_info.get('columns', [])]
+            phone_cols = [c for c in columns if 'phone' in c.lower()]
+
+            for phone_col in phone_cols:
+                try:
+                    rows = crud.generic_query(db, table_name, filters={phone_col: phone_number})
+                    if rows:
+                        all_records[table_name] = rows
+                except Exception:
+                    pass
+
+        found = bool(all_records)
+        total = sum(len(v) for v in all_records.values())
         return {
-            "found": len(orders) > 0 or len(appointments) > 0,
-            "summary": f"Customer has {len(orders)} past orders and {len(appointments)} appointments.",
-            "history": history
+            "found": found,
+            "summary": f"Found {total} record(s) across {len(all_records)} table(s)." if found else "No history found for this customer.",
+            "history": all_records
         }
     finally:
         db.close()
