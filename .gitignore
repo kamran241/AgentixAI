@@ -37,3 +37,11 @@ Thumbs.db
 # Test output
 final_test_summary.txt
 full_test_report.txt
+
+# Uploaded business documents — never commit user files
+data/pdfs/*
+!data/pdfs/.gitkeep
+uploads/
+data/uploads/
+*.pdf
+!tests/sample_data/*.pdf
