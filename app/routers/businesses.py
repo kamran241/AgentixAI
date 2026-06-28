@@ -415,6 +415,7 @@ class WidgetConfigRequest(BaseModel):
     input_color: str = "#111827"
     welcome_message: str = "Hi! How can I help you today?"
     position: str = "right"
+    language: str = "auto"
 
 
 @router.put("/{business_id}/widget-config")

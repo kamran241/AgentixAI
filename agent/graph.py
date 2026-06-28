@@ -168,6 +168,40 @@ def _build_system_prompt(profile: dict, feedback: str = "") -> SystemMessage:
         if feedback else ""
     )
 
+    # Language instruction
+    _LANGUAGE_NAMES = {
+        "auto":    None,
+        "en":      "English",
+        "ur":      "Urdu",
+        "ar":      "Arabic",
+        "fr":      "French",
+        "es":      "Spanish",
+        "de":      "German",
+        "zh":      "Chinese (Simplified)",
+        "hi":      "Hindi",
+        "pt":      "Portuguese",
+        "tr":      "Turkish",
+        "ru":      "Russian",
+        "id":      "Indonesian",
+        "bn":      "Bengali",
+    }
+    widget_cfg  = profile.get("widget_config") or {}
+    lang_code   = widget_cfg.get("language", "auto")
+    lang_name   = _LANGUAGE_NAMES.get(lang_code)
+
+    if lang_name:
+        language_rule = (
+            f"\n\nLANGUAGE RULE: You MUST respond ONLY in {lang_name}. "
+            f"Even if the customer writes in another language, always reply in {lang_name}. "
+            f"Booking confirmations, questions, and all messages must be in {lang_name}."
+        )
+    else:
+        language_rule = (
+            "\n\nLANGUAGE RULE: Detect the language the customer is writing in and always reply in that same language. "
+            "If the customer writes in Urdu, reply in Urdu. If in Arabic, reply in Arabic. "
+            "Match the customer's language exactly in every message."
+        )
+
     custom_prompt = (profile.get("custom_prompt") or "").strip()
 
     if custom_prompt:
@@ -230,7 +264,7 @@ CUSTOMER DATA RULE: Accept the name, phone, and email EXACTLY as the customer pr
 
 CRITICAL — TOOL CALLS: You have real tools. NEVER write tool or function calls in your response text. Do NOT output <function=...>, <tool_call>, or raw JSON blocks. Invoke tools silently through the API only.
 
-RESPONSE STYLE: Be concise and conversational. Answer in 1-3 sentences. Only list details when the customer specifically asks.{feedback_section}""")
+RESPONSE STYLE: Be concise and conversational. Answer in 1-3 sentences. Only list details when the customer specifically asks.{language_rule}{feedback_section}""")
 
 
 def _build_critic_prompt(profile: dict, user_query: str, last_msg: str, tools_called: list, conversation_transcript: str = "") -> str:

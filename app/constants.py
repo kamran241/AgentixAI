@@ -6,4 +6,5 @@ DEFAULT_WIDGET_CONFIG = {
     "welcome_message": "Hi! How can I help you today?",
     "position": "right",
     "logo_url": None,
+    "language": "auto",
 }

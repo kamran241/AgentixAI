@@ -389,14 +389,16 @@ function BookingsTab({ business }) {
 
 /* ── Tabs ──────────────────────────────────────────────────────────────────── */
 
-const TABS = [
+const PRIMARY_TABS = [
   { id: 'overview',      label: 'Overview',      Icon: MessageSquare },
   { id: 'bookings',      label: 'Bookings',       Icon: ClipboardList },
   { id: 'availability',  label: 'Availability',   Icon: Clock },
   { id: 'database',      label: 'Database',       Icon: Database },
   { id: 'customize',     label: 'Customize',      Icon: Palette },
-  { id: 'embed',         label: 'Embed',          Icon: Code2 },
-  { id: 'pdf',           label: 'Document',       Icon: FileText },
+];
+const SECONDARY_TABS = [
+  { id: 'embed', label: 'Embed',    Icon: Code2 },
+  { id: 'pdf',   label: 'Document', Icon: FileText },
 ];
 
 /* ══════════════════════════════════════════════════════════════════════════ */
@@ -444,6 +446,7 @@ export default function BusinessDetail() {
           bg_color: '#0b0f1a',
           input_color: '#111827',
           position: 'right',
+          language: 'auto',
           ...wc,
         });
         setCustomPrompt(data.custom_prompt || '');
@@ -465,7 +468,7 @@ export default function BusinessDetail() {
     setSaving(true);
     try {
       const { data } = await api.put(`/businesses/${id}/widget-config`, cfg);
-      setCfg({ primary_color: '#6366f1', bg_color: '#0b0f1a', input_color: '#111827', position: 'right', ...data });
+      setCfg({ primary_color: '#6366f1', bg_color: '#0b0f1a', input_color: '#111827', position: 'right', language: 'auto', ...data });
       setSaveOk(true);
       setTimeout(() => setSaveOk(false), 2500);
     } finally { setSaving(false); }
@@ -564,16 +567,24 @@ export default function BusinessDetail() {
           <div className="detail-header-left">
             <div className="detail-icon">
               {cfg?.logo_url
-                ? <img src={`${API_BASE}${cfg.logo_url}`} alt="logo" style={{ width: 52, height: 52, borderRadius: 14, objectFit: 'cover' }}/>
-                : <Building2 size={24} color="var(--accent)"/>
+                ? <img src={`${API_BASE}${cfg.logo_url}`} alt="logo" style={{ width: 48, height: 48, borderRadius: 12, objectFit: 'cover' }}/>
+                : <Building2 size={22} color="var(--accent)"/>
               }
             </div>
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', marginBottom: '0.2rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', marginBottom: '0.15rem' }}>
                 <h1 className="detail-title" style={{ margin: 0 }}>{business.name}</h1>
                 <span className="live-badge"><span className="live-badge-dot"/>Live</span>
               </div>
-              <p className="detail-type">{business.type}</p>
+              <p className="detail-type" style={{ marginBottom: '0.35rem' }}>{business.type}{business.description ? ` — ${business.description}` : ''}</p>
+              <div className="detail-stat-strip">
+                <span><strong>{business.tables?.length || 0}</strong> tables</span>
+                <span className="dss-sep">·</span>
+                <span><strong>{business.conversation_count || 0}</strong> conversations</span>
+                <span className="dss-sep">·</span>
+                <span><strong>{business.tables?.reduce((s, t) => s + (t.row_count || 0), 0) || 0}</strong> records</span>
+                {business.has_pdf && <><span className="dss-sep">·</span><span className="dss-pdf">PDF uploaded</span></>}
+              </div>
               <CapabilityBadges caps={business.capabilities} />
             </div>
           </div>
@@ -587,56 +598,27 @@ export default function BusinessDetail() {
           </div>
         </div>
 
-        {/* Stats */}
-        <div className="stats-row">
-          <div className="stat-card" style={{ '--stat-color': '#6366f1' }}>
-            <div className="stat-card-icon"><Table2 size={17} color="#6366f1"/></div>
-            <div className="stat-card-body">
-              <div className="stat-num">{business.tables?.length || 0}</div>
-              <div className="stat-label">Tables</div>
-            </div>
+        {/* Tabs: primary + secondary */}
+        <div className="tab-bar-wrap">
+          <div className="tab-bar">
+            {PRIMARY_TABS.map(({ id: tid, label, Icon }) => (
+              <button key={tid} className={`tab-btn ${tab === tid ? 'active' : ''}`} onClick={() => setTab(tid)}>
+                <Icon size={13}/>{label}
+              </button>
+            ))}
           </div>
-          <div className="stat-card" style={{ '--stat-color': '#06b6d4' }}>
-            <div className="stat-card-icon"><MessageSquare size={17} color="#06b6d4"/></div>
-            <div className="stat-card-body">
-              <div className="stat-num">{business.conversation_count || 0}</div>
-              <div className="stat-label">Conversations</div>
-            </div>
+          <div className="tab-secondary">
+            {SECONDARY_TABS.map(({ id: tid, label, Icon }) => (
+              <button key={tid} className={`tab-secondary-btn ${tab === tid ? 'active' : ''}`} onClick={() => setTab(tid)}>
+                <Icon size={13}/>{label}
+              </button>
+            ))}
           </div>
-          <div className="stat-card" style={{ '--stat-color': '#10b981' }}>
-            <div className="stat-card-icon"><ClipboardList size={17} color="#10b981"/></div>
-            <div className="stat-card-body">
-              <div className="stat-num">{business.tables?.reduce((s, t) => s + (t.row_count || 0), 0) || 0}</div>
-              <div className="stat-label">Records</div>
-            </div>
-          </div>
-          <div className="stat-card" style={{ '--stat-color': business.has_pdf ? '#10b981' : '#475569' }}>
-            <div className="stat-card-icon"><FileText size={17} color={business.has_pdf ? '#10b981' : '#475569'}/></div>
-            <div className="stat-card-body">
-              <div className="stat-num" style={{ fontSize: '1.1rem', color: business.has_pdf ? 'var(--success)' : 'var(--text-muted)' }}>
-                {business.has_pdf ? 'Yes' : 'No'}
-              </div>
-              <div className="stat-label">PDF Uploaded</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div className="tab-bar">
-          {TABS.map(({ id: tid, label, Icon }) => (
-            <button key={tid} className={`tab-btn ${tab === tid ? 'active' : ''}`} onClick={() => setTab(tid)}>
-              <Icon size={14}/>{label}
-            </button>
-          ))}
         </div>
 
         {/* ── Overview ── */}
         {tab === 'overview' && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="tab-content">
-            <div className="detail-section">
-              <h3 className="section-heading">Description</h3>
-              <p className="detail-desc">{business.description || 'No description available.'}</p>
-            </div>
             <div className="detail-section">
               <h3 className="section-heading">Recent Conversations</h3>
               {!business.recent_sessions?.length
@@ -653,12 +635,12 @@ export default function BusinessDetail() {
                             return `${Math.floor(h / 24)}d ago`;
                           })()
                         : '-';
+                      const channel = s.id?.startsWith('widget-') ? 'Widget' : s.id?.startsWith('test-') ? 'Test' : 'Chat';
                       return (
                         <div key={s.id} className="session-row clickable" onClick={() => setViewSession(s.id)}>
                           <span className={`session-dot ${dotClass}`}/>
-                          <MessageSquare size={13} color="var(--text-muted)" style={{ flexShrink: 0 }}/>
-                          <span className="session-id">Visitor {business.recent_sessions.length - idx}</span>
-                          <span className="session-preview">{s.id}</span>
+                          <span className="session-visitor">Visitor {business.recent_sessions.length - idx}</span>
+                          <span className="session-channel">{channel}</span>
                           <span className="session-msgs">{s.message_count} msg{s.message_count !== 1 ? 's' : ''}</span>
                           <span className="session-date">{relDate}</span>
                           <span className="session-view">View →</span>
@@ -736,10 +718,29 @@ export default function BusinessDetail() {
                     </div>
                     <p className="field-hint">PNG, JPG, WEBP — shown in widget header</p>
                   </div>
-                  <div className="cust-row-2">
+                  <div className="cust-row-3">
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label>Bot Name</label>
                       <input type="text" value={cfg.bot_name || ''} onChange={e => setCfg(p => ({ ...p, bot_name: e.target.value }))} placeholder="AI Assistant"/>
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label>Bot Language</label>
+                      <select value={cfg.language || 'auto'} onChange={e => setCfg(p => ({ ...p, language: e.target.value }))}>
+                        <option value="auto">🌐 Auto-detect</option>
+                        <option value="en">🇬🇧 English</option>
+                        <option value="ur">🇵🇰 Urdu</option>
+                        <option value="ar">🇸🇦 Arabic</option>
+                        <option value="fr">🇫🇷 French</option>
+                        <option value="es">🇪🇸 Spanish</option>
+                        <option value="de">🇩🇪 German</option>
+                        <option value="hi">🇮🇳 Hindi</option>
+                        <option value="zh">🇨🇳 Chinese</option>
+                        <option value="pt">🇧🇷 Portuguese</option>
+                        <option value="tr">🇹🇷 Turkish</option>
+                        <option value="ru">🇷🇺 Russian</option>
+                        <option value="bn">🇧🇩 Bengali</option>
+                        <option value="id">🇮🇩 Indonesian</option>
+                      </select>
                     </div>
                     <div className="form-group" style={{ marginBottom: 0 }}>
                       <label>Widget Position</label>
