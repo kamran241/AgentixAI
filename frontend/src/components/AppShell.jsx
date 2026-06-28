@@ -32,7 +32,6 @@ function NotificationBell() {
     return () => clearInterval(interval);
   }, []);
 
-  // Close on outside click
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener('mousedown', handler);
@@ -72,7 +71,7 @@ function NotificationBell() {
   return (
     <div className="notif-bell-wrap" ref={ref}>
       <button className="notif-bell-btn" onClick={() => { setOpen(o => !o); if (!open) fetchNotifs(); }}>
-        <Bell size={17}/>
+        <Bell size={16}/>
         {unread > 0 && <span className="notif-badge">{unread > 99 ? '99+' : unread}</span>}
       </button>
 
@@ -86,17 +85,13 @@ function NotificationBell() {
               </button>
             )}
           </div>
-
           <div className="notif-list">
             {notifications.length === 0 && (
               <div className="notif-empty">No notifications yet</div>
             )}
             {notifications.map(n => (
-              <div
-                key={n.id}
-                className={`notif-item${n.read ? '' : ' unread'}`}
-                onClick={() => !n.read && markRead(n.id)}
-              >
+              <div key={n.id} className={`notif-item${n.read ? '' : ' unread'}`}
+                onClick={() => !n.read && markRead(n.id)}>
                 <div className="notif-item-icon"><TypeIcon type={n.type}/></div>
                 <div className="notif-item-body">
                   <div className="notif-item-title">{n.title}</div>
@@ -145,12 +140,9 @@ export default function AppShell({ children, showPromo = false }) {
 
         <nav className="shell-nav">
           {NAV_ITEMS.map(({ to, label, Icon }) => (
-            <Link
-              key={to}
-              to={to}
+            <Link key={to} to={to}
               className={`shell-nav-item${location.pathname === to ? ' active' : ''}`}
-              title={label}
-            >
+              title={label}>
               <Icon size={16} /><span className="nav-label">{label}</span>
             </Link>
           ))}
@@ -172,7 +164,6 @@ export default function AppShell({ children, showPromo = false }) {
               <div className="user-name">{user?.name}</div>
               <div className="user-email">{user?.email}</div>
             </div>
-            <NotificationBell />
           </div>
           <button className="shell-logout" onClick={handleLogout} title="Sign out">
             <LogOut size={14} /><span>Sign out</span>
@@ -181,6 +172,10 @@ export default function AppShell({ children, showPromo = false }) {
       </aside>
 
       <main className="shell-main">
+        {/* Top bar with notification bell */}
+        <div className="shell-topbar">
+          <NotificationBell />
+        </div>
         {children}
       </main>
     </div>

@@ -3,8 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import {
   Plus, Building2, Calendar, ChevronRight,
   FileUp, X, MessageSquare, Database, Bot,
-  Search, Activity, Layers, ArrowUpRight, BarChart2,
-  Circle,
+  Search, Activity, ArrowUpRight, BarChart2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';

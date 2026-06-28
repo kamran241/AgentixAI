@@ -205,7 +205,7 @@ export default function Bookings() {
           style={{ minWidth: 160 }}>
           <option value="all">All businesses</option>
           {businesses.map(b => (
-            <option key={b.id} value={b.id}>{b.name}</option>
+            <option key={b.id} value={String(b.id)}>{b.name}</option>
           ))}
         </select>
       </div>
@@ -230,9 +230,11 @@ export default function Bookings() {
             const phone = pickPhone(b);
             const email = pickEmail(b);
             const leftoverKeys = Object.keys(b).filter(k =>
-              !['business_id','business_name','table','id','session_id','created_at',
+              !['business_id','business_name','table','id','session_id','created_at','record_type',
                 ...TIME_KEYS,...NAME_KEYS,...PHONE_KEYS,...EMAIL_KEYS].includes(k) &&
-              !k.toLowerCase().includes('email') && !k.toLowerCase().includes('phone')
+              !k.toLowerCase().includes('email') && !k.toLowerCase().includes('phone') &&
+              !k.toLowerCase().includes('name') && !k.toLowerCase().includes('time') &&
+              !k.toLowerCase().includes('date')
             );
 
             return (

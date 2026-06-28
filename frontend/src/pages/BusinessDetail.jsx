@@ -31,39 +31,77 @@ function CopyButton({ text }) {
 /* ── Widget live preview ───────────────────────────────────────────────────── */
 
 function WidgetPreview({ config }) {
-  const color = config.primary_color || '#6366f1';
-  const bgColor = config.bg_color || '#0b0f1a';
-  const inputColor = config.input_color || '#111827';
+  const [view, setView] = useState('desktop');
+  const color      = config.primary_color || '#6366f1';
+  const bgColor    = config.bg_color      || '#0b0f1a';
+  const inputColor = config.input_color   || '#111827';
+
   return (
     <div className="widget-preview-wrap">
-      <div className="widget-preview-label">Live Preview</div>
-      <div className="widget-preview" style={{ background: bgColor }}>
-        {/* header */}
-        <div className="wp-header" style={{ background: color }}>
-          {config.logo_url
-            ? <img src={`${API_BASE}${config.logo_url}`} alt="logo" className="wp-logo"/>
-            : <div className="wp-logo-placeholder" style={{ background: `${color}cc` }}>
-                <Bot size={14} color="white"/>
-              </div>
-          }
-          <div>
-            <div className="wp-bot-name">{config.bot_name || 'AI Assistant'}</div>
-            <div className="wp-status"><span className="online-dot"/>Online</div>
-          </div>
+      {/* toggle */}
+      <div className="wp-preview-toolbar">
+        <span className="widget-preview-label">Live Preview</span>
+        <div className="wp-view-toggle">
+          <button className={`wp-view-btn ${view === 'desktop' ? 'active' : ''}`} onClick={() => setView('desktop')}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            Desktop
+          </button>
+          <button className={`wp-view-btn ${view === 'mobile' ? 'active' : ''}`} onClick={() => setView('mobile')}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="18" r="1" fill="currentColor"/></svg>
+            Mobile
+          </button>
         </div>
-        {/* welcome message */}
-        <div className="wp-body" style={{ background: bgColor }}>
-          <div className="wp-msg">
-            <div className="wp-avatar" style={{ background: color }}>
-              <Bot size={10} color="white"/>
+      </div>
+
+      {/* preview frame */}
+      <div className={`wp-frame ${view}`}>
+        {view === 'desktop' && (
+          <div className="wp-desktop-mockup">
+            <div className="wp-screen-bar">
+              <span/><span/><span/>
             </div>
-            <div className="wp-bubble">{config.welcome_message || 'Hi! How can I help you?'}</div>
           </div>
-        </div>
-        {/* input */}
-        <div className="wp-input" style={{ background: inputColor }}>
-          <div className="wp-input-bar">Type a message...</div>
-          <div className="wp-send-btn" style={{ background: color }}>›</div>
+        )}
+        {view === 'mobile' && (
+          <div className="wp-phone-mockup">
+            <div className="wp-phone-notch"/>
+          </div>
+        )}
+
+        <div className="widget-preview" style={{ background: bgColor }}>
+          <div className="wp-header" style={{ background: color }}>
+            {config.logo_url
+              ? <img src={`${API_BASE}${config.logo_url}`} alt="logo" className="wp-logo"/>
+              : <div className="wp-logo-placeholder" style={{ background: `${color}cc` }}>
+                  <Bot size={14} color="white"/>
+                </div>
+            }
+            <div>
+              <div className="wp-bot-name">{config.bot_name || 'AI Assistant'}</div>
+              <div className="wp-status"><span className="online-dot"/>Online</div>
+            </div>
+          </div>
+          <div className="wp-body" style={{ background: bgColor }}>
+            <div className="wp-msg">
+              <div className="wp-avatar" style={{ background: color }}>
+                <Bot size={10} color="white"/>
+              </div>
+              <div className="wp-bubble">{config.welcome_message || 'Hi! How can I help you?'}</div>
+            </div>
+            {/* typing indicator */}
+            <div className="wp-msg">
+              <div className="wp-avatar" style={{ background: color }}>
+                <Bot size={10} color="white"/>
+              </div>
+              <div className="wp-bubble wp-typing">
+                <span/><span/><span/>
+              </div>
+            </div>
+          </div>
+          <div className="wp-input" style={{ background: inputColor }}>
+            <div className="wp-input-bar">Type a message...</div>
+            <div className="wp-send-btn" style={{ background: color }}>›</div>
+          </div>
         </div>
       </div>
     </div>
@@ -333,30 +371,22 @@ function BookingsTab({ business }) {
         <div className="empty-tab">No records found{dateFilter ? ` for ${dateFilter}` : ''}.</div>
       ) : (
         <div className="bookings-table-wrap">
+          {(() => {
+            const PRIORITY_COLS = ['customer_name','name','appointment_time','booking_time','date','time','slot',
+                                   'service','service_type','customer_phone','phone','customer_email','email'];
+            const sortCols = (keys) => [
+              ...PRIORITY_COLS.filter(p => keys.includes(p)),
+              ...keys.filter(k => !PRIORITY_COLS.includes(k)),
+            ];
+            const headerKeys = sortCols(Object.keys(filtered[0]).filter(k => k !== 'id'));
+            return (
           <table className="bookings-table">
             <thead>
-              <tr>
-                {(() => {
-                  const allKeys = Object.keys(filtered[0]).filter(k => k !== 'id');
-                  const priority = ['customer_name','name','appointment_time','booking_time','date','time','slot',
-                                    'service','service_type','customer_phone','phone','customer_email','email'];
-                  const sorted = [
-                    ...priority.filter(p => allKeys.includes(p)),
-                    ...allKeys.filter(k => !priority.includes(k)),
-                  ];
-                  return sorted.map(k => <th key={k}>{k.replace(/_/g,' ')}</th>);
-                })()}
-              </tr>
+              <tr>{headerKeys.map(k => <th key={k}>{k.replace(/_/g,' ')}</th>)}</tr>
             </thead>
             <tbody>
               {filtered.map((row, i) => {
-                const allKeys = Object.keys(row).filter(k => k !== 'id');
-                const priority = ['customer_name','name','appointment_time','booking_time','date','time','slot',
-                                  'service','service_type','customer_phone','phone','customer_email','email'];
-                const sorted = [
-                  ...priority.filter(p => allKeys.includes(p)),
-                  ...allKeys.filter(k => !priority.includes(k)),
-                ];
+                const sorted = sortCols(Object.keys(row).filter(k => k !== 'id'));
                 return (
                   <tr key={i}>
                     {sorted.map(k => {
@@ -381,6 +411,8 @@ function BookingsTab({ business }) {
               })}
             </tbody>
           </table>
+            );
+          })()}
         </div>
       )}
     </div>
@@ -552,8 +584,6 @@ export default function BusinessDetail() {
   const widgetUrl = `${window.location.origin}/widget-chat?token=${business.public_token}`;
 
   return (
-    <>
-    {viewSession && <ConversationModal sessionId={viewSession} onClose={() => setViewSession(null)}/>}
     <AppShell>
       {/* Breadcrumb */}
         <div className="breadcrumb">
@@ -576,7 +606,10 @@ export default function BusinessDetail() {
                 <h1 className="detail-title" style={{ margin: 0 }}>{business.name}</h1>
                 <span className="live-badge"><span className="live-badge-dot"/>Live</span>
               </div>
-              <p className="detail-type" style={{ marginBottom: '0.35rem' }}>{business.type}{business.description ? ` — ${business.description}` : ''}</p>
+              <p className="detail-type" style={{ marginBottom: '0.35rem' }}>
+                {business.type}
+                {business.description ? ` — ${business.description.slice(0, 80)}${business.description.length > 80 ? '…' : ''}` : ''}
+              </p>
               <div className="detail-stat-strip">
                 <span><strong>{business.tables?.length || 0}</strong> tables</span>
                 <span className="dss-sep">·</span>
@@ -929,7 +962,12 @@ export default function BusinessDetail() {
             }
           </motion.div>
         )}
+
+      <AnimatePresence>
+        {viewSession && (
+          <ConversationModal sessionId={viewSession} onClose={() => setViewSession(null)}/>
+        )}
+      </AnimatePresence>
     </AppShell>
-    </>
   );
 }
