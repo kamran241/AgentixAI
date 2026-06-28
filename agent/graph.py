@@ -1,5 +1,8 @@
+import re
+import json
+import time as _time
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
@@ -11,19 +14,21 @@ from .state import AgentState
 from .tools import (
     search_knowledge, validate_address, check_availability,
     save_record, get_records, analyze_stats, get_customer_history,
-    get_available_slots,
+    get_available_slots, cancel_booking,
 )
 
 
 class Evaluation(BaseModel):
-    is_valid: bool = Field(description="True if the response is correct and complete.")
+    # str instead of bool — Groq LLM outputs "false"/"true" strings and fails
+    # boolean schema validation. We coerce manually in critic_node.
+    is_valid: str = Field(description="Set to 'true' if the response is correct and complete, or 'false' if it needs correction.")
     feedback: str = Field(description="Specific instructions on what is missing or needs to be fixed.")
 
 
 # Tool groups — composed per business capabilities
 _BASE_TOOLS = [search_knowledge, get_records, get_customer_history]
 _ORDER_TOOLS = [save_record, analyze_stats]
-_BOOKING_TOOLS = [get_available_slots, check_availability, save_record]
+_BOOKING_TOOLS = [get_available_slots, check_availability, save_record, cancel_booking]
 _DELIVERY_TOOLS = [validate_address]
 
 
@@ -135,15 +140,21 @@ def _build_system_prompt(profile: dict, feedback: str = "") -> SystemMessage:
         tool_instructions.append(
             f"BOOKINGS — follow this exact flow every time:\n"
             f"  1. Ask what SERVICE/TYPE of appointment they need (e.g. Check-up, Cleaning, etc.).\n"
-            f"  2. If the business has multiple staff, ask for their PREFERENCE (e.g. which dentist).\n"
-            f"  3. Ask for their preferred DATE. {slots_note}\n"
-            f"  4. Show available slots for that date and let the customer CHOOSE one.\n"
-            f"  5. Collect: Full Name, Phone Number, Email Address — if customer skips any, ask again. Do NOT proceed.\n"
-            f"  6. Read back ALL details for CONFIRMATION: service, date, time, name, phone, email.\n"
-            f"  7. Only after customer confirms all details — call save_record(always_insert=True).\n"
-            f"  HARD RULE: Steps 5 and 6 are MANDATORY. If Name, Phone, or Email is missing from this conversation, do NOT call save_record — ask for the missing info first.\n"
+            f"  2. Ask for their preferred DATE. {slots_note}\n"
+            f"  3. Show available slots for that date and let the customer CHOOSE one.\n"
+            f"  4. In ONE single message ask for ALL THREE: Full Name, Phone Number, AND Email Address together. Example: 'To confirm your booking, could I get your full name, phone number, and email address?'. Do NOT ask for them one at a time.\n"
+            f"  5. Read back ALL details for CONFIRMATION in one message: service, date/time, name, phone, email.\n"
+            f"  6. When the customer says yes/confirms — call save_record(always_insert=True) RIGHT NOW in this very response. Do NOT say 'I will save' or 'I'll book now' — just call the tool immediately. After the tool returns success, tell the customer their booking is confirmed.\n"
+            f"  HARD RULE: Step 4 is MANDATORY — all three fields in ONE ask. If Name, Phone, or Email is missing, ask for the missing ones together in one message. Do NOT call save_record until you have all three.\n"
+            f"  HARD RULE: NEVER narrate that you are about to save. The tool call IS the save.\n"
             f"  NEVER use placeholder values like 'John Doe', 'session123', or '1234567890'.\n"
-            f"  RESCHEDULE: collect new date/time, re-confirm all details, call save_record(always_insert=True) again."
+            f"  RESCHEDULE — follow these steps:\n"
+            f"    a. Call get_records to find the customer's existing booking and note its 'id'.\n"
+            f"    b. Call get_available_slots for the new preferred date.\n"
+            f"    c. Let the customer choose a new slot and confirm ALL details.\n"
+            f"    d. Call cancel_booking(table_name, booking_id) to delete the old slot.\n"
+            f"    e. Call save_record(always_insert=True) to create the new booking.\n"
+            f"  Do NOT create the new booking before cancelling the old one — this would double-book the customer."
         )
     if capabilities.get('has_delivery'):
         tool_instructions.append(
@@ -215,6 +226,8 @@ TOOL USAGE:
 
 ALWAYS collect Name, Phone Number, and Email Address before saving any booking or order record.
 
+CUSTOMER DATA RULE: Accept the name, phone, and email EXACTLY as the customer provides them. NEVER ask the customer to re-confirm their email or phone because it "looks unusual" or might be a typo. Trust what the customer types and move forward.
+
 CRITICAL — TOOL CALLS: You have real tools. NEVER write tool or function calls in your response text. Do NOT output <function=...>, <tool_call>, or raw JSON blocks. Invoke tools silently through the API only.
 
 RESPONSE STYLE: Be concise and conversational. Answer in 1-3 sentences. Only list details when the customer specifically asks.{feedback_section}""")
@@ -238,13 +251,20 @@ def _build_critic_prompt(profile: dict, user_query: str, last_msg: str, tools_ca
         criteria.append("UPSELLING: Suggest a complementary item (pastry, snack, upgrade) when the user is ordering.")
     if capabilities.get('has_bookings'):
         criteria.append(
-            "BOOKING FLOW: The agent must follow all 7 steps: ask service type → ask staff preference → "
-            "show available slots → customer picks slot → collect Name+Phone+Email → confirm all details → save_record(always_insert=True). "
-            "Skipping any step is INVALID. Confirming without collecting email is INVALID."
+            "BOOKING FLOW: The agent must follow these steps: ask service → ask date → show slots → customer picks → "
+            "ask Name+Phone+Email TOGETHER in one message → confirm all details → save_record(always_insert=True). "
+            "Confirming without collecting email is INVALID. "
+            "CRITICAL: If the customer just said yes/confirmed AND 'save_record' does NOT appear in Tools Called, "
+            "the response is INVALID — tell the agent to call save_record immediately, not narrate that it will."
+        )
+        criteria.append(
+            "NARRATION vs ACTION: If the response says 'I'll save', 'I'll now save', 'I'll book', or similar future-tense "
+            "phrases about saving, but save_record is NOT in Tools Called, this is INVALID. "
+            "The agent must call the tool, not describe calling it."
         )
         criteria.append(
             "RESCHEDULE: If the customer wants to change their booking, the agent must collect new date/time, "
-            "re-confirm all details, and call save_record(always_insert=True) again. "
+            "re-confirm all details, call cancel_booking, then call save_record(always_insert=True). "
             "Saying 'rescheduled' without calling save_record is INVALID."
         )
     if capabilities.get('has_delivery'):
@@ -268,40 +288,109 @@ CUSTOMER DATA CHECK: If save_record was called, verify that the customer's real 
 Is this response valid? If not, give specific, actionable instructions for what must be fixed."""
 
 
+# Matches Llama's leaked text format: <function=name{...}</function> or <function=name>{...}</function>
+_TEXT_TOOL_RE = re.compile(
+    r'<function=(\w+)>?\s*(\{.*?\})\s*</function>',
+    re.DOTALL,
+)
+
+
+def _recover_text_tool_calls(response: AIMessage) -> AIMessage:
+    """
+    When Llama leaks <function=name{args}</function> into text instead of
+    using the proper tool_calls API, parse and promote them to real tool calls
+    so the ToolNode can execute them.
+    """
+    if response.tool_calls or not response.content:
+        return response
+
+    matches = _TEXT_TOOL_RE.findall(response.content)
+    if not matches:
+        return response
+
+    tool_calls = []
+    for func_name, args_str in matches:
+        try:
+            args = json.loads(args_str)
+            tool_calls.append({
+                "name": func_name,
+                "args": args,
+                "id": f"recovered_{func_name}_{int(_time.time() * 1000)}",
+                "type": "tool_call",
+            })
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    if not tool_calls:
+        # Could not parse — at least strip the raw tags from visible text
+        clean = _TEXT_TOOL_RE.sub("", response.content).strip()
+        return AIMessage(content=clean or response.content)
+
+    clean_content = _TEXT_TOOL_RE.sub("", response.content).strip()
+    return AIMessage(content=clean_content, tool_calls=tool_calls)
+
+
 def _compile_graph(has_orders: bool, has_bookings: bool, has_delivery: bool):
     tools = _select_tools(has_orders, has_bookings, has_delivery)
     tool_node = ToolNode(tools)
 
-    llm = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0)
+    llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
     fallback_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
     model = llm.bind_tools(tools)
     fallback_model = fallback_llm.bind_tools(tools)
     critic_model = llm.with_structured_output(Evaluation)
 
     def call_model(state: AgentState):
-        from groq import BadRequestError
+        from groq import BadRequestError, APIConnectionError, RateLimitError, APIStatusError
         profile = state.get("business_profile", {})
         feedback = state.get("critic_feedback", "")
         system_msg = _build_system_prompt(profile, feedback)
         messages = [system_msg] + list(state["messages"])
+        response = None
         try:
             response = model.invoke(messages)
+        except RateLimitError:
+            # Main model quota exhausted — fall through to fallback model
+            try:
+                response = fallback_model.invoke(messages)
+            except RateLimitError:
+                response = AIMessage(content="I'm very busy right now. Please wait 30 seconds and try again.")
+            except Exception:
+                response = AIMessage(content="Something went wrong. Please try again.")
+        except APIConnectionError:
+            _time.sleep(1)
+            try:
+                response = model.invoke(messages)
+            except Exception:
+                response = AIMessage(content="I'm having trouble connecting. Please try again in a moment.")
         except BadRequestError as e:
             if "tool_use_failed" in str(e):
-                # Groq malformed tool call — retry with fallback model
                 try:
                     response = fallback_model.invoke(messages)
                 except Exception:
-                    from langchain_core.messages import AIMessage
-                    response = AIMessage(content="I'm sorry, I had trouble processing that. Could you rephrase your question?")
+                    response = AIMessage(content="I'm sorry, I had trouble processing that. Could you rephrase?")
             else:
-                raise
+                response = AIMessage(content="Something went wrong on my end. Please try again.")
+        except APIStatusError as e:
+            response = AIMessage(content=f"The AI service returned an error ({e.status_code}). Please try again.")
+
+        if response is None:
+            response = AIMessage(content="Something unexpected happened. Please try again.")
+
+        # Recover any <function=...> tags the model leaked into plain text
+        response = _recover_text_tool_calls(response)
         return {"messages": [response], "critic_feedback": ""}
 
     def critic_node(state: AgentState):
         profile = state.get("business_profile", {})
         current_retries = state.get("retry_count", 0)
         last_msg = state["messages"][-1].content
+        # LLM can return content as a list of blocks instead of a plain string
+        if isinstance(last_msg, list):
+            last_msg = " ".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in last_msg
+            )
 
         user_query = ""
         human_messages = []
@@ -327,28 +416,51 @@ def _compile_graph(has_orders: bool, has_bookings: bool, has_delivery: bool):
         conversation_transcript = "\n".join(transcript_lines[-20:])  # last 20 turns max
 
         prompt = _build_critic_prompt(profile, user_query, last_msg, tools_called, conversation_transcript)
-        result = critic_model.invoke(prompt)
+        try:
+            result = critic_model.invoke(prompt)
+        except Exception:
+            # Critic failure: pass through without resetting the retry counter so the
+            # retry budget isn't artificially restored if the critic is consistently broken.
+            return {"critic_feedback": "", "retry_count": current_retries}
 
-        # allow 2 retries when save_record is missing but claimed — strict enforcement
+        # Coerce string → bool (model returns "true"/"false" strings)
+        is_valid = str(result.is_valid).strip().lower() not in ("false", "0", "no", "invalid")
+
+        # Allow 2 retries when save_record is missing but claimed — strict enforcement
         caps = profile.get("capabilities") or {}
         needs_save = caps.get("has_orders") or caps.get("has_bookings")
-        claimed_saved = any(w in last_msg.lower() for w in ("saved", "confirmed", "order ready", "booking confirmed", "record saved"))
+        claimed_saved = any(w in last_msg.lower() for w in (
+            "saved", "confirmed", "order ready", "booking confirmed", "record saved",
+            "i'll save", "i will save", "i'll now save", "saving your", "booking now",
+            "appointment is booked", "appointment has been", "i'll book",
+        ))
         save_was_called = "save_record" in tools_called
         max_retries = 2 if (needs_save and claimed_saved and not save_was_called) else 1
 
-        if not result.is_valid and current_retries < max_retries:
+        if not is_valid and current_retries < max_retries:
             return {"critic_feedback": result.feedback, "retry_count": current_retries + 1}
         return {"critic_feedback": "", "retry_count": 0}
 
-    def should_continue(state: AgentState):
-        return "tools" if state["messages"][-1].tool_calls else END
+    def route_agent(state: AgentState):
+        """After agent: go to tools if it made tool calls, else go to critic."""
+        if state["messages"][-1].tool_calls:
+            return "tools"
+        return "critic"
+
+    def route_critic(state: AgentState):
+        """After critic: retry agent if feedback was set, else end."""
+        if state.get("critic_feedback"):
+            return "agent"
+        return END
 
     workflow = StateGraph(AgentState)
     workflow.add_node("agent", call_model)
     workflow.add_node("tools", tool_node)
+    workflow.add_node("critic", critic_node)
     workflow.set_entry_point("agent")
-    workflow.add_conditional_edges("agent", should_continue)
+    workflow.add_conditional_edges("agent", route_agent, {"tools": "tools", "critic": "critic"})
     workflow.add_edge("tools", "agent")
+    workflow.add_conditional_edges("critic", route_critic, {"agent": "agent", END: END})
     return workflow.compile()
 
 

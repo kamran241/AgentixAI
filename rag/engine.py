@@ -24,7 +24,14 @@ class ColumnSchema(BaseModel):
 class TableSchema(BaseModel):
     table_name: str = Field(description="SQL table name in snake_case, e.g. customer_orders")
     purpose: str = Field(description="One sentence describing what this table stores, e.g. 'Stores customer pizza orders with items and delivery details'")
-    columns: List[ColumnSchema] = Field(description="Columns for this table. Always include customer_name and customer_phone.")
+    columns: List[ColumnSchema] = Field(
+        description=(
+            "Columns for this table. ALWAYS include these three columns in every table: "
+            "customer_name (TEXT), customer_phone (TEXT), customer_email (TEXT). "
+            "For booking/appointment tables also include an appointment_time (DATETIME) column. "
+            "Never omit customer_name, customer_phone, or customer_email."
+        )
+    )
 
 
 class BusinessRule(BaseModel):
@@ -51,7 +58,7 @@ class RAGEngine:
         print("Initializing RAGEngine...")
         self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         self.llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
-        self.base_directory = os.path.join(os.getcwd(), "data", "chroma_db")
+        self.base_directory = os.getenv("CHROMA_DIR", os.path.join(os.getcwd(), "data", "chroma_db"))
         self.vectorstores: dict = {}
         os.makedirs(self.base_directory, exist_ok=True)
         print(f"RAG base directory: {self.base_directory}")
@@ -157,7 +164,9 @@ even if not explicitly in the document. Examples: upsell combinations, service a
                 print(f"Error loading vectorstore for business_id={business_id}: {e}")
                 return None
 
-        return self.vectorstores[business_id].as_retriever(search_kwargs={"k": 5})
+        count = self.vectorstores[business_id]._collection.count()
+        k = max(1, min(5, count))
+        return self.vectorstores[business_id].as_retriever(search_kwargs={"k": k})
 
     def query_knowledge(self, query: str, business_id: Optional[int]) -> Tuple[str, List]:
         if not business_id:

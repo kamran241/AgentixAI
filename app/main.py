@@ -12,6 +12,7 @@ from app.routers.auth import router as auth_router
 from app.routers.businesses import router as businesses_router
 from app.routers.chat import router as chat_router
 from app.routers.widget import router as widget_router
+from app.routers.notifications import router as notifications_router
 
 app = FastAPI(
     title="Agentix API",
@@ -53,6 +54,7 @@ app.include_router(businesses_router)
 app.include_router(chat_router)
 app.include_router(widget_router)
 app.include_router(admin_router.router)
+app.include_router(notifications_router)
 
 
 # Legacy endpoint — kept for backwards compatibility with existing frontend

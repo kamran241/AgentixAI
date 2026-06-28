@@ -2,6 +2,7 @@ import json
 import secrets
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy import text
 
@@ -320,14 +321,25 @@ def create_dynamic_table(db: Session, table_name: str, columns: list, business_i
     id_col = "id SERIAL PRIMARY KEY" if is_pg else "id INTEGER PRIMARY KEY AUTOINCREMENT"
     ts_type = "TIMESTAMP" if is_pg else "DATETIME"
 
+    _ALLOWED_TYPES = {
+        "TEXT", "INTEGER", "INT", "BIGINT", "SMALLINT", "REAL", "FLOAT",
+        "NUMERIC", "DECIMAL", "BOOLEAN", "BOOL", "DATE", "DATETIME",
+        "TIMESTAMP", "VARCHAR", "DOUBLE PRECISION",
+    }
+
     col_defs = [id_col, "session_id TEXT"]
     for col in columns:
         col_name = "".join(c for c in col['name'] if c.isalnum() or c == "_")
-        ctype = col['type'].upper()
+        ctype = col['type'].upper().strip()
+        if ctype not in _ALLOWED_TYPES:
+            ctype = "TEXT"
         if is_pg:
             if ctype == "DATETIME": ctype = "TIMESTAMP"
             if ctype == "REAL": ctype = "DOUBLE PRECISION"
-        col_defs.append(f"{col_name} {ctype}")
+        # Booking/time columns get a UNIQUE constraint so the DB atomically prevents
+        # double-booking even under concurrent inserts (no TOCTOU race possible).
+        is_time_col = any(kw in col['name'].lower() for kw in _TIME_COLUMN_KEYWORDS)
+        col_defs.append(f"{col_name} {ctype}{' UNIQUE' if is_time_col else ''}")
 
     col_defs.append(f"created_at {ts_type} DEFAULT CURRENT_TIMESTAMP")
     sql = f"CREATE TABLE IF NOT EXISTS {full_table_name} ({', '.join(col_defs)})"
@@ -353,12 +365,16 @@ def drop_dynamic_table(db: Session, table_name: str):
 
 # ── Generic Table Operations ──────────────────────────────────────────────────
 
+_TIME_COLUMN_KEYWORDS = {"time", "date", "appointment", "booking", "slot", "schedule", "datetime"}
+
+
 def generic_save(db: Session, table_name: str, session_id: str, data: dict,
-                 always_insert: bool = False) -> bool:
+                 always_insert: bool = False) -> tuple[bool, str]:
     """
     Insert or update a row in a dynamic table.
-    - always_insert=True  → always INSERT (use for bookings; each booking is a separate row)
-    - always_insert=False → UPSERT by session_id (use for orders; updates the existing session row)
+    - always_insert=True  → always INSERT (bookings); also enforces no duplicate time slot.
+    - always_insert=False → UPSERT by session_id (orders).
+    Returns (True, "") on success or (False, error_message) on conflict/error.
     """
     safe_table = "".join(c for c in table_name if c.isalnum() or c == "_")
 
@@ -378,6 +394,27 @@ def generic_save(db: Session, table_name: str, session_id: str, data: dict,
         if clean_key in existing_cols and clean_key != "session_id":
             safe_data[clean_key] = json.dumps(v) if isinstance(v, (list, dict)) else v
 
+    # Atomic slot-conflict check for booking inserts
+    if always_insert:
+        time_col = next(
+            (k for k in safe_data
+             if k not in ("session_id", "created_at", "id")
+             and any(kw in k.lower() for kw in _TIME_COLUMN_KEYWORDS)
+             and safe_data[k]),
+            None,
+        )
+        if time_col:
+            slot_val = str(safe_data[time_col]).strip()
+            conflict = db.execute(
+                text(f"SELECT 1 FROM {safe_table} WHERE CAST({time_col} AS TEXT) = :sv LIMIT 1"),
+                {"sv": slot_val},
+            ).fetchone()
+            if conflict:
+                return False, (
+                    f"Slot conflict: '{slot_val}' is already booked. "
+                    "Call get_available_slots to find a free time and offer alternatives."
+                )
+
     if not always_insert:
         exists = db.execute(
             text(f"SELECT 1 FROM {safe_table} WHERE session_id = :sid"),
@@ -386,17 +423,24 @@ def generic_save(db: Session, table_name: str, session_id: str, data: dict,
     else:
         exists = None
 
-    if exists:
-        set_clause = ", ".join(f"{k} = :{k}" for k in safe_data if k != "session_id")
-        if set_clause:
-            db.execute(text(f"UPDATE {safe_table} SET {set_clause} WHERE session_id = :session_id"), safe_data)
-    else:
-        keys = ", ".join(safe_data.keys())
-        placeholders = ", ".join(f":{k}" for k in safe_data.keys())
-        db.execute(text(f"INSERT INTO {safe_table} ({keys}) VALUES ({placeholders})"), safe_data)
-
-    db.commit()
-    return True
+    try:
+        if exists:
+            set_clause = ", ".join(f"{k} = :{k}" for k in safe_data if k != "session_id")
+            if set_clause:
+                db.execute(text(f"UPDATE {safe_table} SET {set_clause} WHERE session_id = :session_id"), safe_data)
+        else:
+            keys = ", ".join(safe_data.keys())
+            placeholders = ", ".join(f":{k}" for k in safe_data.keys())
+            db.execute(text(f"INSERT INTO {safe_table} ({keys}) VALUES ({placeholders})"), safe_data)
+        db.commit()
+        return True, ""
+    except IntegrityError:
+        db.rollback()
+        # UNIQUE constraint on the time column fired — concurrent request already claimed this slot.
+        return False, (
+            "Slot conflict: that time slot was just booked by another request. "
+            "Call get_available_slots to find a free time and offer alternatives."
+        )
 
 
 def generic_query(db: Session, table_name: str, filters: dict = None, limit: int = 50) -> list:
@@ -423,3 +467,46 @@ def get_table_row_count(db: Session, table_name: str) -> int:
         return db.execute(text(f"SELECT COUNT(*) FROM {safe_table}")).scalar() or 0
     except Exception:
         return 0
+
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+
+def create_notification(db: Session, user_id: int, business_id: int, title: str, message: str, type: str = "booking") -> models.Notification:
+    notif = models.Notification(user_id=user_id, business_id=business_id, title=title, message=message, type=type)
+    db.add(notif)
+    db.commit()
+    db.refresh(notif)
+    return notif
+
+
+def get_notifications(db: Session, user_id: int, limit: int = 30) -> list:
+    return (
+        db.query(models.Notification)
+        .filter(models.Notification.user_id == user_id)
+        .order_by(models.Notification.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def get_unread_count(db: Session, user_id: int) -> int:
+    return db.query(models.Notification).filter(
+        models.Notification.user_id == user_id,
+        models.Notification.read == False
+    ).count()
+
+
+def mark_notification_read(db: Session, notification_id: int, user_id: int):
+    db.query(models.Notification).filter(
+        models.Notification.id == notification_id,
+        models.Notification.user_id == user_id
+    ).update({"read": True})
+    db.commit()
+
+
+def mark_all_notifications_read(db: Session, user_id: int):
+    db.query(models.Notification).filter(
+        models.Notification.user_id == user_id,
+        models.Notification.read == False
+    ).update({"read": True})
+    db.commit()

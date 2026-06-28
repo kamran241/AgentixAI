@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Zap, Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Register() {
@@ -36,7 +36,7 @@ export default function Register() {
       {/* Left — form */}
       <div className="auth-split-left">
         <Link to="/" className="auth-split-logo">
-          <div className="logo-icon small"><Zap size={15} color="white" fill="white"/></div>
+          <img src="/logo.svg" className="logo-icon small" alt="Agentix" />
           <span>Agentix</span>
         </Link>
 

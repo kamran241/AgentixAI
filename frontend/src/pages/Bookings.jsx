@@ -1,39 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
-  Zap, Building2, Calendar, LogOut, Search, X,
-  RefreshCw, ChevronRight, ChevronLeft, Clock, User, Phone, Mail, Settings,
+  Search, X, RefreshCw, Clock, User, Phone, Mail, ChevronRight,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { useAuth } from '../context/AuthContext';
 import api from '../api';
-
-const TIME_KEYS  = ['appointment_time','booking_time','time','slot','appointment_date','booking_date','date','order_date','created_at'];
-const NAME_KEYS  = ['customer_name','name','full_name','patient_name','client_name'];
-const PHONE_KEYS = ['customer_phone','phone','phone_number','mobile','contact'];
-const EMAIL_KEYS = ['customer_email','email','email_address'];
-
-function pick(row, keys) {
-  for (const k of keys) {
-    if (row[k] != null && String(row[k]).trim()) return String(row[k]);
-  }
-  return null;
-}
-
-function formatTime(val) {
-  if (!val) return '—';
-  try {
-    const d = new Date(val);
-    if (!isNaN(d)) return d.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
-  } catch {}
-  return val;
-}
+import AppShell from '../components/AppShell';
+import { BookingsSkeleton } from '../components/Skeleton';
+import { TIME_KEYS, NAME_KEYS, PHONE_KEYS, EMAIL_KEYS, pick, formatTime } from '../utils/bookingFields';
 
 export default function Bookings() {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
-  const [sbCollapsed, setSbCollapsed] = useState(() => localStorage.getItem('sb-collapsed') === 'true');
-  const toggleSidebar = () => setSbCollapsed(v => { const n = !v; localStorage.setItem('sb-collapsed', String(n)); return n; });
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading]   = useState(true);
   const [search, setSearch]     = useState('');
@@ -62,47 +38,9 @@ export default function Bookings() {
     return Object.values(b).some(v => String(v || '').toLowerCase().includes(q));
   });
 
-  const handleLogout = () => { logout(); navigate('/'); };
-
   return (
-    <div className="app-shell">
-      {/* Sidebar */}
-      <aside className={`shell-sidebar${sbCollapsed ? ' collapsed' : ''}`}>
-        <button className="sidebar-collapse-btn" onClick={toggleSidebar} title={sbCollapsed ? 'Expand' : 'Collapse'}>
-          {sbCollapsed ? <ChevronRight size={11}/> : <ChevronLeft size={11}/>}
-        </button>
-        <Link to="/" className="shell-logo">
-          <div className="logo-icon small"><Zap size={14} color="white" fill="white"/></div>
-          <span className="logo-text">AGENTIX</span>
-        </Link>
-        <nav className="shell-nav">
-          <Link to="/dashboard" className="shell-nav-item" title="Dashboard">
-            <Building2 size={16}/><span className="nav-label">Dashboard</span>
-          </Link>
-          <Link to="/bookings" className="shell-nav-item active" title="Bookings">
-            <Calendar size={16}/><span className="nav-label">Bookings</span>
-          </Link>
-          <Link to="/settings" className="shell-nav-item" title="Settings">
-            <Settings size={16}/><span className="nav-label">Settings</span>
-          </Link>
-        </nav>
-        <div className="shell-sidebar-bottom">
-          <div className="shell-user">
-            <div className="user-avatar">{user?.name?.[0]?.toUpperCase()}</div>
-            <div className="user-info">
-              <div className="user-name">{user?.name}</div>
-              <div className="user-email">{user?.email}</div>
-            </div>
-          </div>
-          <button className="shell-logout" onClick={handleLogout} title="Sign out">
-            <LogOut size={14}/><span>Sign out</span>
-          </button>
-        </div>
-      </aside>
-
-      {/* Main */}
-      <main className="shell-main">
-        <div className="page-header">
+    <AppShell>
+      <div className="page-header">
           <div>
             <h1 className="page-title">Bookings & Orders</h1>
             <p className="page-sub">All appointments and orders across your businesses</p>
@@ -130,7 +68,7 @@ export default function Bookings() {
         </div>
 
         {loading ? (
-          <div className="loading-state">Loading bookings...</div>
+          <BookingsSkeleton />
         ) : filtered.length === 0 ? (
           <div className="empty-tab" style={{ marginTop: '3rem' }}>
             {bookings.length === 0
@@ -203,7 +141,6 @@ export default function Bookings() {
             })}
           </motion.div>
         )}
-      </main>
-    </div>
+    </AppShell>
   );
 }

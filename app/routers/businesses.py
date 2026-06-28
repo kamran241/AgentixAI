@@ -1,5 +1,9 @@
+import ipaddress
 import os
+import re
 import shutil
+import uuid
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -9,6 +13,7 @@ from db.database import get_db
 from db import models, crud
 from app.dependencies import get_current_user
 from rag.instance import rag_engine
+from app.constants import DEFAULT_WIDGET_CONFIG
 
 router = APIRouter(prefix="/businesses", tags=["businesses"])
 
@@ -25,19 +30,67 @@ def _parse_json_field(value):
             return {}
     return value
 
-UPLOAD_DIR = "./data/pdfs"
-LOGO_DIR = "./data/logos"
+UPLOAD_DIR = os.getenv("PDF_DIR", "./data/pdfs")
+LOGO_DIR   = os.getenv("LOGO_DIR", "./data/logos")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(LOGO_DIR, exist_ok=True)
 
-DEFAULT_WIDGET_CONFIG = {
-    "bot_name": "AI Assistant",
-    "primary_color": "#6366f1",
-    "bg_color": "#0b0f1a",
-    "welcome_message": "Hi! How can I help you today?",
-    "position": "right",
-    "logo_url": None,
-}
+_ALLOWED_PDF_EXTS  = {".pdf", ".txt"}
+_ALLOWED_LOGO_EXTS = {".png", ".jpg", ".jpeg", ".webp"}   # SVG excluded (XSS risk)
+_MAX_PDF_BYTES  = 20 * 1024 * 1024   # 20 MB
+_MAX_LOGO_BYTES = 5  * 1024 * 1024   #  5 MB
+
+# Only PostgreSQL is allowed — MySQL driver (PyMySQL) is not installed.
+_ALLOWED_DB_SCHEMES = re.compile(r"^(postgresql|postgres):\/\/", re.I)
+
+# Private/loopback ranges that must never be reachable via external-DB URLs (SSRF)
+_PRIVATE_NETS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / AWS IMDS
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),         # IPv6 ULA
+]
+_PRIVATE_HOSTNAMES = re.compile(r"^(localhost|.*\.local|.*\.internal|.*\.localhost)$", re.I)
+
+
+def _assert_public_host(url: str):
+    """Raise HTTPException(400) if the URL targets a private or loopback host."""
+    try:
+        host = urlparse(url).hostname or ""
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid connection URL")
+
+    if not host:
+        raise HTTPException(status_code=400, detail="Connection URL is missing a host")
+
+    if _PRIVATE_HOSTNAMES.match(host):
+        raise HTTPException(status_code=400, detail="Connection to private/local hosts is not allowed")
+
+    try:
+        addr = ipaddress.ip_address(host)
+        for net in _PRIVATE_NETS:
+            if addr in net:
+                raise HTTPException(status_code=400, detail="Connection to private/local IPs is not allowed")
+    except ValueError:
+        pass  # Hostname — not a raw IP; resolved at connect time by the driver
+
+
+def _validate_upload(file: UploadFile, allowed_exts: set, max_bytes: int, content: bytes):
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail=f"File type not allowed. Accepted: {', '.join(sorted(allowed_exts))}")
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=400, detail=f"File too large (max {max_bytes // (1024*1024)} MB)")
+
+
+def _safe_pdf_path(business_id: int, original_filename: str) -> tuple[str, str]:
+    """Return (unique_filename, full_path) for a PDF, scoped to the business."""
+    ext = os.path.splitext(original_filename or "file.pdf")[1].lower() or ".pdf"
+    unique_name = f"biz{business_id}_{uuid.uuid4().hex[:10]}{ext}"
+    return unique_name, os.path.join(UPLOAD_DIR, unique_name)
 
 
 def _serialize_business(profile: models.BusinessProfile, db: Session) -> dict:
@@ -169,13 +222,15 @@ async def analyze_pdf(
     """Upload PDF, run AI analysis, return suggested schema for user review."""
     models.Base.metadata.create_all(bind=db.bind)
 
-    safe_filename = os.path.basename(file.filename)
-    file_path = os.path.join(UPLOAD_DIR, safe_filename)
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
+    content = await file.read()
+    _validate_upload(file, _ALLOWED_PDF_EXTS, _MAX_PDF_BYTES, content)
 
     profile = crud.create_business_profile(db, user_id=current_user.id)
     business_id = profile.id
+
+    safe_filename, file_path = _safe_pdf_path(business_id, file.filename)
+    with open(file_path, "wb") as buffer:
+        buffer.write(content)
 
     identity = rag_engine.ingest_business_file(file_path, business_id)
 
@@ -288,13 +343,16 @@ async def ingest_pdf(
     """One-shot ingest: AI chooses schema automatically. Kept for compatibility."""
     models.Base.metadata.create_all(bind=db.bind)
 
-    safe_filename = os.path.basename(file.filename)
-    file_path = os.path.join(UPLOAD_DIR, safe_filename)
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
+    content = await file.read()
+    _validate_upload(file, _ALLOWED_PDF_EXTS, _MAX_PDF_BYTES, content)
 
     profile = crud.create_business_profile(db, user_id=current_user.id)
     business_id = profile.id
+
+    safe_filename, file_path = _safe_pdf_path(business_id, file.filename)
+    with open(file_path, "wb") as buffer:
+        buffer.write(content)
+
     identity = rag_engine.ingest_business_file(file_path, business_id)
 
     created_tables = []
@@ -354,6 +412,7 @@ class WidgetConfigRequest(BaseModel):
     bot_name: str = "AI Assistant"
     primary_color: str = "#6366f1"
     bg_color: str = "#0b0f1a"
+    input_color: str = "#111827"
     welcome_message: str = "Hi! How can I help you today?"
     position: str = "right"
 
@@ -387,14 +446,14 @@ async def upload_logo(
     if not profile or profile.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in {".png", ".jpg", ".jpeg", ".webp", ".svg"}:
-        raise HTTPException(status_code=400, detail="Only PNG, JPG, WEBP, SVG allowed")
+    content = await file.read()
+    _validate_upload(file, _ALLOWED_LOGO_EXTS, _MAX_LOGO_BYTES, content)
 
+    ext = os.path.splitext(file.filename or "")[1].lower()
     logo_filename = f"logo_{business_id}{ext}"
     logo_path = os.path.join(LOGO_DIR, logo_filename)
     with open(logo_path, "wb") as f:
-        f.write(await file.read())
+        f.write(content)
 
     logo_url = f"/uploads/logos/{logo_filename}"
     existing = dict(profile.widget_config or {})
@@ -419,19 +478,19 @@ def set_external_db(
 ):
     raw_url = body.url.strip()
 
-    # Test connection before saving
     if raw_url:
+        if not _ALLOWED_DB_SCHEMES.match(raw_url):
+            raise HTTPException(status_code=400, detail="Only PostgreSQL connection URLs are supported")
+        _assert_public_host(raw_url)
         try:
             from sqlalchemy import create_engine, text as sa_text
-            test_url = raw_url
-            if test_url.startswith("postgres://"):
-                test_url = test_url.replace("postgres://", "postgresql://", 1)
+            test_url = raw_url.replace("postgres://", "postgresql://", 1) if raw_url.startswith("postgres://") else raw_url
             test_engine = create_engine(test_url, connect_args={"connect_timeout": 8})
             with test_engine.connect() as conn:
                 conn.execute(sa_text("SELECT 1"))
             test_engine.dispose()
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not connect to the database. Check the URL and credentials.")
 
     profile = crud.set_external_db_url(db, business_id, current_user.id, raw_url or None)
     if not profile:
@@ -451,17 +510,22 @@ def test_external_db(
     raw_url = body.url.strip()
     if not raw_url:
         raise HTTPException(status_code=400, detail="No URL provided")
+    if not _ALLOWED_DB_SCHEMES.match(raw_url):
+        return {"ok": False, "message": "Only PostgreSQL connection URLs are supported"}
+    try:
+        _assert_public_host(raw_url)
+    except HTTPException as exc:
+        return {"ok": False, "message": exc.detail}
     try:
         from sqlalchemy import create_engine, text as sa_text
-        if raw_url.startswith("postgres://"):
-            raw_url = raw_url.replace("postgres://", "postgresql://", 1)
-        engine = create_engine(raw_url, connect_args={"connect_timeout": 8})
-        with engine.connect() as conn:
+        test_url = raw_url.replace("postgres://", "postgresql://", 1) if raw_url.startswith("postgres://") else raw_url
+        eng = create_engine(test_url, connect_args={"connect_timeout": 8})
+        with eng.connect() as conn:
             conn.execute(sa_text("SELECT 1"))
-        engine.dispose()
+        eng.dispose()
         return {"ok": True, "message": "Connection successful"}
-    except Exception as e:
-        return {"ok": False, "message": str(e)}
+    except Exception:
+        return {"ok": False, "message": "Could not connect. Check the URL and credentials."}
 
 
 # ── Migrate existing tables to external DB ───────────────────────────────────
@@ -490,9 +554,16 @@ def migrate_tables_to_external_db(
             id_col = "id SERIAL PRIMARY KEY" if is_pg else "id INTEGER PRIMARY KEY AUTOINCREMENT"
             ts_type = "TIMESTAMP" if is_pg else "DATETIME"
             col_defs = [id_col, "session_id TEXT"]
+            _ALLOWED = {
+                "TEXT","INTEGER","INT","BIGINT","SMALLINT","REAL","FLOAT",
+                "NUMERIC","DECIMAL","BOOLEAN","BOOL","DATE","DATETIME",
+                "TIMESTAMP","VARCHAR","DOUBLE PRECISION",
+            }
             for col in t.get("columns", []):
                 col_name = "".join(c for c in col["name"] if c.isalnum() or c == "_")
-                ctype = col["type"].upper()
+                ctype = col["type"].upper().strip()
+                if ctype not in _ALLOWED:
+                    ctype = "TEXT"
                 if is_pg:
                     if ctype == "DATETIME": ctype = "TIMESTAMP"
                     if ctype == "REAL": ctype = "DOUBLE PRECISION"

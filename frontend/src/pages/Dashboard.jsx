@@ -1,13 +1,18 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
-  Zap, Plus, LogOut, Building2, Calendar, Package, Truck,
-  FileUp, X, ChevronRight, ChevronLeft, MessageSquare, Database, Bot,
-  Search, Activity, Layers, Sparkles, ArrowUpRight, BarChart2, Settings,
+  Plus, Building2, Calendar, ChevronRight,
+  FileUp, X, MessageSquare, Database, Bot,
+  Search, Activity, Layers, ArrowUpRight, BarChart2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import api, { API_BASE } from '../api';
+import AppShell from '../components/AppShell';
+import CapabilityBadges from '../components/CapabilityBadges';
+import { DashboardSkeleton } from '../components/Skeleton';
+import { TIME_KEYS, NAME_KEYS, pick } from '../utils/bookingFields';
 
 /* ── Upload steps ─────────────────────────────────────────────────────────── */
 
@@ -19,18 +24,6 @@ const UPLOAD_STEPS = [
   'Building knowledge base...',
 ];
 
-/* ── Capability badges ────────────────────────────────────────────────────── */
-
-function CapBadges({ caps }) {
-  if (!caps) return null;
-  return (
-    <div className="cap-badges">
-      {caps.has_orders    && <span className="capability-badge badge-orders"><Package size={9}/> Orders</span>}
-      {caps.has_bookings  && <span className="capability-badge badge-bookings"><Calendar size={9}/> Bookings</span>}
-      {caps.has_delivery  && <span className="capability-badge badge-delivery"><Truck size={9}/> Delivery</span>}
-    </div>
-  );
-}
 
 /* ── Schema editor ────────────────────────────────────────────────────────── */
 
@@ -132,7 +125,6 @@ function UploadModal({ onClose, onSuccess }) {
   const [phase, setPhase]           = useState('upload');
   const [step, setStep]             = useState(0);
   const [uploading, setUploading]   = useState(false);
-  const [error, setError]           = useState('');
   const [analysis, setAnalysis]     = useState(null);
   const [confirming, setConfirming] = useState(false);
   const timers = useRef([]);
@@ -140,7 +132,7 @@ function UploadModal({ onClose, onSuccess }) {
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    setError(''); setUploading(true); setStep(0);
+    setUploading(true); setStep(0);
     timers.current = UPLOAD_STEPS.slice(1).map((_, i) =>
       setTimeout(() => setStep(i + 1), (i + 1) * 2200)
     );
@@ -153,7 +145,7 @@ function UploadModal({ onClose, onSuccess }) {
       setPhase('schema');
     } catch (err) {
       timers.current.forEach(clearTimeout);
-      setError(err.response?.data?.detail || 'Upload failed. Please try again.');
+      toast.error(err.response?.data?.detail || 'Upload failed. Please try again.');
       setUploading(false);
     }
   };
@@ -164,7 +156,7 @@ function UploadModal({ onClose, onSuccess }) {
       const { data } = await api.post(`/businesses/${analysis.business_id}/confirm-schema`, { tables });
       onSuccess(data);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to create tables.');
+      toast.error(err.response?.data?.detail || 'Failed to create tables.');
       setConfirming(false);
     }
   };
@@ -210,7 +202,6 @@ function UploadModal({ onClose, onSuccess }) {
                 ))}
               </div>
             )}
-            {error && <div className="form-error" style={{ marginTop: '1rem' }}>{error}</div>}
           </>
         ) : (
           <>
@@ -220,7 +211,6 @@ function UploadModal({ onClose, onSuccess }) {
             </div>
             <SchemaEditor analysisResult={analysis} onConfirm={handleConfirm}
               onBack={() => setPhase('upload')} confirming={confirming}/>
-            {error && <div className="form-error" style={{ marginTop: '0.5rem' }}>{error}</div>}
           </>
         )}
       </motion.div>
@@ -234,16 +224,16 @@ function StatCard({ label, value, icon: Icon, color, sub, delay }) {
   return (
     <motion.div className="dash-stat-card"
       initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
-      transition={{ delay }}>
-      <div className="dash-stat-icon" style={{ background: `${color}18`, border: `1px solid ${color}28` }}>
-        <Icon size={18} color={color}/>
+      transition={{ delay }}
+      style={{ '--stat-color': color }}>
+      <div className="dash-stat-icon" style={{ background: `${color}14`, border: `1px solid ${color}22` }}>
+        <Icon size={17} color={color}/>
       </div>
       <div className="dash-stat-body">
         <div className="dash-stat-value">{value}</div>
         <div className="dash-stat-label">{label}</div>
         {sub && <div className="dash-stat-sub">{sub}</div>}
       </div>
-      <div className="dash-stat-glow" style={{ background: color }}/>
     </motion.div>
   );
 }
@@ -259,73 +249,54 @@ function BusinessCard({ b, index }) {
   return (
     <motion.div className="biz-card"
       initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.06 }} whileHover={{ y: -4, transition: { duration: 0.2 } }}>
+      transition={{ delay: index * 0.06 }}>
 
-      {/* Gradient header */}
-      <div className="biz-card-header" style={{ background: `linear-gradient(135deg, ${accentColor}22 0%, ${accentColor}08 100%)` }}>
-        <div className="biz-card-accent" style={{ background: accentColor }}/>
-        <div className="biz-card-logo">
-          {logoUrl
-            ? <img src={logoUrl} alt="logo" style={{ width: 42, height: 42, borderRadius: 10, objectFit: 'cover' }}/>
-            : <div className="biz-card-logo-placeholder" style={{ background: `${accentColor}22`, border: `1.5px solid ${accentColor}44` }}>
-                <Building2 size={18} color={accentColor}/>
-              </div>
-          }
-        </div>
+      {/* Top accent bar */}
+      <div className="biz-card-accent" style={{ background: accentColor }}/>
+
+      {/* Logo + status */}
+      <div className="biz-card-top">
+        {logoUrl
+          ? <img src={logoUrl} alt="logo" style={{ width: 40, height: 40, borderRadius: 10, objectFit: 'cover' }}/>
+          : <div className="biz-card-logo-placeholder" style={{ background: `${accentColor}14`, border: `1.5px solid ${accentColor}30` }}>
+              <Building2 size={19} color={accentColor}/>
+            </div>
+        }
         <div className={`biz-status-pill ${isActive ? 'active' : 'idle'}`}>
           <span className="biz-status-dot"/>
           {isActive ? 'Active' : 'Idle'}
         </div>
       </div>
 
-      {/* Body */}
+      {/* Info */}
       <div className="biz-card-body">
         <div className="biz-card-type">{b.type}</div>
         <h3 className="biz-card-name">{b.name}</h3>
-        <p className="biz-card-desc">{b.description?.slice(0, 80)}{b.description?.length > 80 ? '…' : ''}</p>
-        <CapBadges caps={b.capabilities}/>
+        <p className="biz-card-desc">{b.description?.slice(0, 90)}{b.description?.length > 90 ? '…' : ''}</p>
+        <CapabilityBadges caps={b.capabilities} size={9} className="cap-badges" />
       </div>
 
-      {/* Stats row */}
-      <div className="biz-card-stats">
-        <div className="biz-mini-stat">
-          <Database size={11}/>
-          <span>{b.tables?.length || 0} table{b.tables?.length !== 1 ? 's' : ''}</span>
+      {/* Footer: stats + actions */}
+      <div className="biz-card-footer">
+        <div className="biz-card-stats">
+          <div className="biz-mini-stat"><Database size={11}/><span>{b.tables?.length || 0} tables</span></div>
+          <div className="biz-mini-stat"><MessageSquare size={11}/><span>{b.conversation_count || 0} chats</span></div>
+          <div className="biz-mini-stat"><BarChart2 size={11}/><span>{totalRows} records</span></div>
         </div>
-        <div className="biz-mini-stat">
-          <MessageSquare size={11}/>
-          <span>{b.conversation_count || 0} chat{b.conversation_count !== 1 ? 's' : ''}</span>
+        <div className="biz-card-actions">
+          <Link to={`/business/${b.id}`} className="biz-card-btn primary">
+            Manage <ArrowUpRight size={13}/>
+          </Link>
+          <Link to={`/chat?business_id=${b.id}`} className="biz-card-btn secondary">
+            <Bot size={13}/> Test
+          </Link>
         </div>
-        <div className="biz-mini-stat">
-          <BarChart2 size={11}/>
-          <span>{totalRows} record{totalRows !== 1 ? 's' : ''}</span>
-        </div>
-      </div>
-
-      {/* Actions */}
-      <div className="biz-card-actions">
-        <Link to={`/business/${b.id}`} className="biz-card-btn primary" style={{ '--ac': accentColor }}>
-          Manage <ArrowUpRight size={13}/>
-        </Link>
-        <Link to={`/chat?business_id=${b.id}`} className="biz-card-btn secondary">
-          <Bot size={13}/> Test
-        </Link>
       </div>
     </motion.div>
   );
 }
 
 /* ── Recent bookings mini-widget ──────────────────────────────────────────── */
-
-const TIME_KEYS  = ['appointment_time','booking_time','time','slot','appointment_date','booking_date','date'];
-const NAME_KEYS  = ['customer_name','name','full_name','patient_name','client_name'];
-
-function pick(row, keys) {
-  for (const k of keys) {
-    if (row[k] != null && String(row[k]).trim()) return String(row[k]);
-  }
-  return null;
-}
 
 function RecentBookings({ businesses }) {
   const [bookings, setBookings] = useState([]);
@@ -357,7 +328,7 @@ function RecentBookings({ businesses }) {
             try {
               const d = new Date(time);
               if (!isNaN(d)) timeDisplay = d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-            } catch {}
+            } catch { /* invalid date — skip */ }
           }
           return (
             <div key={i} className="rbw-row">
@@ -377,19 +348,12 @@ function RecentBookings({ businesses }) {
 /* ══════════════════════════════════════════════════════════════════════════ */
 
 export default function Dashboard() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [businesses, setBusinesses] = useState([]);
   const [loading, setLoading]       = useState(true);
   const [showModal, setShowModal]   = useState(false);
   const [search, setSearch]         = useState('');
-  const [sbCollapsed, setSbCollapsed] = useState(() => localStorage.getItem('sb-collapsed') === 'true');
-
-  const toggleSidebar = () => setSbCollapsed(v => {
-    const next = !v;
-    localStorage.setItem('sb-collapsed', String(next));
-    return next;
-  });
 
   const load = async () => {
     try {
@@ -428,7 +392,6 @@ export default function Dashboard() {
   }, [businesses]);
 
   const handleUploadSuccess = (data) => { setShowModal(false); navigate(`/business/${data.business_id}`); };
-  const handleLogout = () => { logout(); navigate('/'); };
 
   const greet = () => {
     const h = new Date().getHours();
@@ -440,55 +403,9 @@ export default function Dashboard() {
   const today = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
 
   return (
-    <div className="app-shell">
-      {/* Sidebar */}
-      <aside className={`shell-sidebar${sbCollapsed ? ' collapsed' : ''}`}>
-        <button className="sidebar-collapse-btn" onClick={toggleSidebar} title={sbCollapsed ? 'Expand' : 'Collapse'}>
-          {sbCollapsed ? <ChevronRight size={11}/> : <ChevronLeft size={11}/>}
-        </button>
-
-        <Link to="/" className="shell-logo">
-          <div className="logo-icon small"><Zap size={14} color="white" fill="white"/></div>
-          <span className="logo-text">AGENTIX</span>
-        </Link>
-
-        <nav className="shell-nav">
-          <Link to="/dashboard" className="shell-nav-item active" title="Dashboard">
-            <Building2 size={16}/><span className="nav-label">Dashboard</span>
-          </Link>
-          <Link to="/bookings" className="shell-nav-item" title="Bookings">
-            <Calendar size={16}/><span className="nav-label">Bookings</span>
-          </Link>
-          <Link to="/settings" className="shell-nav-item" title="Settings">
-            <Settings size={16}/><span className="nav-label">Settings</span>
-          </Link>
-        </nav>
-
-        <div className="shell-sidebar-bottom">
-          <div className="sidebar-promo">
-            <Sparkles size={13} color="var(--accent)"/>
-            <div>
-              <div className="sidebar-promo-title">Open Source</div>
-              <div className="sidebar-promo-sub">Star us on GitHub</div>
-            </div>
-          </div>
-          <div className="shell-user">
-            <div className="user-avatar">{user?.name?.[0]?.toUpperCase()}</div>
-            <div className="user-info">
-              <div className="user-name">{user?.name}</div>
-              <div className="user-email">{user?.email}</div>
-            </div>
-          </div>
-          <button className="shell-logout" onClick={handleLogout} title="Sign out">
-            <LogOut size={14}/><span>Sign out</span>
-          </button>
-        </div>
-      </aside>
-
-      {/* Main */}
-      <main className="shell-main">
-        {/* Header */}
-        <div className="dash-header">
+    <AppShell showPromo>
+      {/* Header */}
+      <div className="dash-header">
           <div className="dash-header-left">
             <div className="dash-greeting">
               {greet()}, <span className="dash-name">{user?.name?.split(' ')[0]}</span>
@@ -503,7 +420,7 @@ export default function Dashboard() {
         </div>
 
         {loading ? (
-          <div className="loading-state">Loading...</div>
+          <DashboardSkeleton />
         ) : (
           <>
             {/* Stats */}
@@ -552,22 +469,15 @@ export default function Dashboard() {
                     <button className="btn-card-secondary" onClick={() => setSearch('')} style={{ marginTop: '1rem' }}>Clear search</button>
                   </div>
                 ) : (
-                  <div className="biz-grid">
-                    {filtered.map((b, i) => <BusinessCard key={b.id} b={b} index={i}/>)}
-                    {!search && (
-                      <motion.button className="biz-card biz-add-card"
-                        onClick={() => setShowModal(true)}
-                        whileHover={{ y: -4, transition: { duration: 0.2 } }}
-                        initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: filtered.length * 0.06 }}>
-                        <div className="biz-add-inner">
-                          <div className="biz-add-icon"><Plus size={22} color="var(--accent)"/></div>
-                          <span>Add Business</span>
-                          <span className="biz-add-hint">Upload a PDF to get started</span>
-                        </div>
-                      </motion.button>
-                    )}
-                  </div>
+                  <>
+                    <div className="biz-section-header">
+                      <span className="biz-section-title">Businesses</span>
+                      <span className="biz-section-count">{filtered.length}</span>
+                    </div>
+                    <div className="biz-grid">
+                      {filtered.map((b, i) => <BusinessCard key={b.id} b={b} index={i}/>)}
+                    </div>
+                  </>
                 )}
               </div>
 
@@ -600,13 +510,11 @@ export default function Dashboard() {
             </div>
           </>
         )}
-      </main>
-
       <AnimatePresence>
         {showModal && (
           <UploadModal onClose={() => setShowModal(false)} onSuccess={handleUploadSuccess}/>
         )}
       </AnimatePresence>
-    </div>
+    </AppShell>
   );
 }

@@ -49,7 +49,11 @@ export default function WidgetChat() {
       const { data } = await axios.post(`${API_BASE}/widget/${token}/chat`, null, {
         params: { session_id: sessionId.current, message: text },
       });
-      setMessages(p => [...p, { type: 'ai', content: data.response }]);
+      const reply = data.response?.trim();
+      setMessages(p => [...p, {
+        type: 'ai',
+        content: reply || "I'm sorry, I couldn't generate a response. Please try again.",
+      }]);
     } catch {
       setMessages(p => [...p, { type: 'ai', content: 'Sorry, I had trouble responding. Please try again.' }]);
     } finally {
@@ -64,9 +68,10 @@ export default function WidgetChat() {
   const wCfg = business?.widget_config || {};
   const accent = wCfg.primary_color || '#6366f1';
   const bgColor = wCfg.bg_color || '#0b0f1a';
+  const inputColor = wCfg.input_color || '#111827';
   const accentRgb = accent.startsWith('#') ? hexToRgb(accent) : '99, 102, 241';
   const botName = wCfg.bot_name || business?.name || 'AI Assistant';
-  const logoUrl = wCfg.logo_url ? `${API_BASE}${wCfg.logo_url}?t=${Date.now()}` : null;
+  const logoUrl = wCfg.logo_url ? `${API_BASE}${wCfg.logo_url}` : null;
 
   const styles = {
     page: {
@@ -128,17 +133,17 @@ export default function WidgetChat() {
     },
     inputArea: {
       padding: '0.625rem 0.875rem',
-      background: bgColor,
-      borderTop: `1px solid rgba(${accentRgb}, 0.25)`,
+      background: inputColor,
+      borderTop: `1px solid rgba(${accentRgb}, 0.2)`,
     },
     inputRow: {
       display: 'flex', alignItems: 'center', gap: '0.5rem',
-      background: 'rgba(255,255,255,0.05)', borderRadius: '0.75rem',
-      border: `1px solid rgba(${accentRgb}, 0.25)`, padding: '0.375rem 0.375rem 0.375rem 0.875rem',
+      background: 'rgba(255,255,255,0.08)', borderRadius: '0.75rem',
+      border: `1px solid rgba(${accentRgb}, 0.35)`, padding: '0.375rem 0.375rem 0.375rem 0.875rem',
     },
     input: {
       flex: 1, background: 'transparent', border: 'none', outline: 'none',
-      color: '#e2e8f0', fontSize: '0.875rem', padding: '0.375rem 0',
+      color: '#ffffff', fontSize: '0.875rem', padding: '0.375rem 0',
     },
     sendBtn: {
       width: 34, height: 34, borderRadius: '0.5rem', border: 'none',
@@ -182,7 +187,9 @@ export default function WidgetChat() {
               </div>
               <div style={m.type === 'human' ? styles.humanBubble : styles.aiBubble}>
                 {m.type === 'ai'
-                  ? <div className="markdown-content"><ReactMarkdown>{m.content}</ReactMarkdown></div>
+                  ? <div style={{ color: 'inherit', fontSize: 'inherit', lineHeight: 'inherit' }}>
+                      <ReactMarkdown>{m.content}</ReactMarkdown>
+                    </div>
                   : m.content}
               </div>
             </motion.div>
@@ -207,6 +214,7 @@ export default function WidgetChat() {
         <div style={styles.inputRow}>
           <input
             style={styles.input}
+            className="widget-chat-input"
             placeholder="Type a message..."
             value={input}
             onChange={e => setInput(e.target.value)}

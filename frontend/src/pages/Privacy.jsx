@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Zap, ArrowLeft } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 
 const LAST_UPDATED = 'June 2025';
 
@@ -56,7 +56,7 @@ export default function Privacy() {
       {/* Nav */}
       <nav className="landing-nav">
         <Link to="/" className="nav-logo">
-          <div className="logo-icon"><Zap size={16} color="white" fill="white"/></div>
+          <img src="/logo.svg" className="logo-icon" alt="Agentix" />
           <span className="logo-text">AGENTIX</span>
         </Link>
         <div className="nav-links">

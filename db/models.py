@@ -24,7 +24,7 @@ class BusinessProfile(Base):
     config = Column(JSON)           # extracted business rules
     capabilities = Column(JSON)     # {has_orders, has_bookings, has_delivery}
     dynamic_tables = Column(JSON)   # [{table_name, purpose, columns:[{name,type}]}]
-    widget_config = Column(JSON, default={})   # {bot_name, primary_color, welcome_message, logo_url, position}
+    widget_config = Column(JSON, default=dict)   # {bot_name, primary_color, welcome_message, logo_url, position}
     pdf_filename = Column(String, nullable=True)
     custom_prompt = Column(Text, nullable=True)       # optional system prompt override
     external_db_url = Column(Text, nullable=True)     # encrypted external DB connection string
@@ -39,7 +39,7 @@ class Session(Base):
     customer_name = Column(String, nullable=True)
     customer_phone = Column(String, nullable=True)
     customer_address = Column(Text, nullable=True)
-    history = Column(JSON, default=[])
+    history = Column(JSON, default=list)
     created_at = Column(DateTime, server_default=func.now())
 
 
@@ -51,3 +51,15 @@ class AuditLog(Base):
     action = Column(String)
     details = Column(JSON)
     timestamp = Column(DateTime, server_default=func.now())
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    business_id = Column(Integer, ForeignKey("business_profiles.id"), nullable=True)
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    type = Column(String, default="booking")   # booking | order | info
+    read = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())

@@ -6,7 +6,7 @@
   if (!token) return console.warn('[Agentix] Missing data-token attribute.');
 
   const baseUrl = script.src.replace('/static/widget.js', '').replace('/widget.js', '');
-  const chatUrl = `${window.location.origin}/widget-chat?token=${token}`;
+  const chatUrl = `${baseUrl}/widget-chat?token=${token}`;
 
   // Styles
   const style = document.createElement('style');

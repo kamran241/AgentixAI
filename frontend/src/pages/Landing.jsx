@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { motion, useInView, useMotionValue, useSpring, useTransform, animate } from 'framer-motion';
 import HeroCanvas from '../components/HeroCanvas';
 import {
-  Zap, Upload, Brain, Globe, ArrowRight, Check, Calendar,
+  Upload, Brain, Globe, ArrowRight, Check, Calendar,
   Github, MessageSquare, Database, Cpu, Search,
   BarChart2, MapPin, Phone, Layers, Code2, Server, Lock, Star,
   ChevronRight, Building2, Stethoscope, UtensilsCrossed, Hotel,
@@ -15,7 +15,7 @@ const fadeUp = {
   hidden: { opacity: 0, y: 32 },
   show:   { opacity: 1, y: 0, transition: { duration: 0.6, ease: [0.22, 1, 0.36, 1] } },
 };
-const stagger = (delay = 0) => ({
+const _stagger = (delay = 0) => ({
   hidden: { opacity: 0, y: 24 },
   show:   { opacity: 1, y: 0, transition: { duration: 0.55, delay, ease: [0.22, 1, 0.36, 1] } },
 });
@@ -130,13 +130,14 @@ export default function Landing() {
         transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}>
         <div className="l-nav-inner">
           <Link to="/" className="l-logo">
-            <div className="logo-icon small"><Zap size={15} color="white" fill="white"/></div>
+            <img src="/logo.svg" className="logo-icon small" alt="Agentix" />
             <span>Agentix</span>
           </Link>
           <div className="l-nav-links">
             <a href="#features"    className="l-nav-link">Features</a>
             <a href="#how-it-works" className="l-nav-link">How it works</a>
             <a href="#use-cases"   className="l-nav-link">Use cases</a>
+            <Link to="/contact"    className="l-nav-link">Contact</Link>
           </div>
           <div className="l-nav-actions">
             <a href="https://github.com/kamran240/AgentixAI" target="_blank" rel="noreferrer" className="l-nav-gh">
@@ -418,7 +419,7 @@ export default function Landing() {
         <div className="l-footer-inner">
           <div className="l-footer-brand">
             <Link to="/" className="l-logo">
-              <div className="logo-icon small"><Zap size={14} color="white" fill="white"/></div>
+              <img src="/logo.svg" className="logo-icon small" alt="Agentix" />
               <span>Agentix</span>
             </Link>
             <p className="l-footer-tagline">Open-source AI booking &amp; customer service platform.<br/>MIT License · Built for real businesses.</p>
@@ -430,7 +431,9 @@ export default function Landing() {
             <a href="#use-cases"    className="l-footer-link">Use cases</a>
           </div>
           <div className="l-footer-col">
-            <div className="l-footer-col-title">Account</div>
+            <div className="l-footer-col-title">Company</div>
+            <Link to="/contact"  className="l-footer-link">Contact</Link>
+            <Link to="/privacy"  className="l-footer-link">Privacy</Link>
             <Link to="/login"    className="l-footer-link">Sign in</Link>
             <Link to="/register" className="l-footer-link">Get started</Link>
           </div>

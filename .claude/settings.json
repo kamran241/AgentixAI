@@ -6,7 +6,11 @@
       "PowerShell(New-Item -ItemType Directory -Force -Path \"d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\src\\\\context\")",
       "PowerShell(New-Item -ItemType Directory -Force -Path \"d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\src\\\\components\")",
       "PowerShell(New-Item -ItemType Directory -Force -Path \"d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\public\")",
-      "Read(//d/agentixAi/AgentixAII/frontend/src/pages/**)"
+      "Read(//d/agentixAi/AgentixAII/frontend/src/pages/**)",
+      "PowerShell(cd d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\src\\\\pages; foreach \\($f in @\\('Bookings.jsx','BusinessDetail.jsx','ChatPage.jsx','Dashboard.jsx','Landing.jsx','Settings.jsx','WidgetChat.jsx'\\)\\) { $count = \\(Select-String 'motion\\\\.' $f\\).Count; Write-Host \"$f motion. usages: $count\" })",
+      "PowerShell(cd d:\\\\agentixAi\\\\AgentixAI\\\\frontend\\\\src\\\\pages; foreach \\($f in @\\('BusinessDetail.jsx','Dashboard.jsx','Landing.jsx','Settings.jsx'\\)\\) { $count = \\(Select-String '\\\\bIcon\\\\b' $f\\).Count; Write-Host \"$f Icon usages: $count\" })",
+      "Bash(git diff *)",
+      "Read(//tmp/**)"
     ]
   }
 }

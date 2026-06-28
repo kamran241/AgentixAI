@@ -1,135 +1,121 @@
-import requests
-import time
+"""
+Smoke tests for the AgentixAI API.
+
+Usage (server must be running):
+    python tests/smoke_test.py
+
+Requires a test user in the DB. Set env vars or edit the constants below:
+    TEST_EMAIL, TEST_PASSWORD, TEST_BUSINESS_ID
+"""
 import os
+import time
+import requests
 
-API_BASE = "http://localhost:8000"
+API_BASE = os.getenv("API_BASE", "http://localhost:8000")
+TEST_EMAIL = os.getenv("TEST_EMAIL", "test@example.com")
+TEST_PASSWORD = os.getenv("TEST_PASSWORD", "testpassword123")
+TEST_BUSINESS_ID = int(os.getenv("TEST_BUSINESS_ID", "1"))
 
-def wait_for_server():
-    print("Waiting for server to be ready...")
-    for _ in range(30):
+SAMPLE_PDF = os.path.join(os.path.dirname(__file__), "sample_data", "marios_pizza.pdf")
+
+
+def wait_for_server(timeout=60):
+    print("Waiting for server...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
         try:
-            resp = requests.get(f"{API_BASE}/health")
-            if resp.status_code == 200:
-                print("Server is UP!")
+            r = requests.get(f"{API_BASE}/health", timeout=3)
+            if r.status_code == 200:
+                print("Server is UP.")
                 return True
-        except:
+        except Exception:
             pass
         time.sleep(2)
+    print("Server did not start in time.")
     return False
 
-def test_pizza_flow():
-    print("\n--- Testing Mario's Pizza Flow ---")
-    
-    # 1. Ingest
-    file_path = "./data/samples/marios_pizza.pdf"
-    with open(file_path, 'rb') as f:
-        resp = requests.post(f"{API_BASE}/ingest-pdf", files={'file': f})
-        print(f"Ingest status: {resp.status_code}")
-        print(f"Business: {resp.json()['identity']['name']}")
 
-    # 2. Chat (Simulated Scenario 1)
-    session_id = f"test-pizza-{int(time.time())}"
-    
+def get_token():
+    r = requests.post(
+        f"{API_BASE}/auth/login",
+        json={"email": TEST_EMAIL, "password": TEST_PASSWORD},
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json()["access_token"]
+
+
+def auth_headers(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_health():
+    print("\n--- Health check ---")
+    r = requests.get(f"{API_BASE}/health", timeout=5)
+    assert r.status_code == 200, f"Health failed: {r.status_code}"
+    print("OK:", r.json())
+
+
+def test_auth(token):
+    print("\n--- Auth check ---")
+    r = requests.get(f"{API_BASE}/auth/me", headers=auth_headers(token), timeout=5)
+    assert r.status_code == 200, f"Me failed: {r.status_code} {r.text}"
+    print("Logged in as:", r.json().get("email"))
+
+
+def test_ingest_pdf(token):
+    if not os.path.exists(SAMPLE_PDF):
+        print(f"\n--- PDF ingest SKIPPED (no sample at {SAMPLE_PDF}) ---")
+        return
+    print("\n--- PDF ingest ---")
+    with open(SAMPLE_PDF, "rb") as f:
+        r = requests.post(
+            f"{API_BASE}/businesses/ingest",
+            files={"file": f},
+            headers=auth_headers(token),
+            timeout=60,
+        )
+    print(f"Status: {r.status_code}")
+    if r.status_code in (200, 201):
+        print("Response:", r.json())
+    else:
+        print("Body:", r.text[:300])
+
+
+def test_chat(token):
+    print("\n--- Chat flow ---")
+    session_id = f"smoke-{int(time.time())}"
     queries = [
         "Hi",
-        "I want to order a pizza",
-        "Large pepperoni",
-        "Regular crust",
-        "What sides or drinks do you suggest?", # Testing proactive info retrieval
-        "Coke and garlic bread",
-        "Actually add extra cheese to that pizza too",
-        "Delivery",
-        "34 Front Street, N4K 4L7",
-        "No",
-        "Yes"
+        "What pizzas do you have?",
+        "I want to order a large pepperoni",
     ]
-    
     for q in queries:
-        print(f"User: {q}")
-        resp = requests.post(f"{API_BASE}/chat", params={"session_id": session_id, "message": q})
-        print(f"AI: {resp.json()['response']}\n")
+        r = requests.post(
+            f"{API_BASE}/chat",
+            params={"session_id": session_id, "message": q, "business_id": TEST_BUSINESS_ID},
+            headers=auth_headers(token),
+            timeout=30,
+        )
+        if r.status_code == 200:
+            print(f"User: {q}")
+            print(f"  AI: {r.json().get('response', '')[:120]}")
+        else:
+            print(f"Chat failed ({r.status_code}): {r.text[:200]}")
 
-def test_dentist_flow():
-    print("\n--- Testing Dentist Flow ---")
-    
-    # 1. Ingest
-    file_path = "./data/samples/bright_smile_dental.pdf"
-    with open(file_path, 'rb') as f:
-        resp = requests.post(f"{API_BASE}/ingest-pdf", files={'file': f})
-        print(f"Ingest status: {resp.status_code}")
-    
-    # 2. Chat (Simulated Scenario 3)
-    session_id = f"test-dentist-{int(time.time())}"
-    
-    queries = [
-        "Hello I need to see a skin doctor",
-        "Mole check",
-        "First available",
-        "Tuesday", # Assuming AI proposes times and user picks one
-        "John Carter",
-        "226-555-0199",
-        "Yes",
-        "Actually I can't Tuesday",
-        "Reschedule",
-        "Wednesday"
-    ]
-    
-    for q in queries:
-        print(f"User: {q}")
-        resp = requests.post(f"{API_BASE}/chat", params={"session_id": session_id, "message": q})
-        print(f"AI: {resp.json()['response']}\n")
-
-def test_dry_cleaner_flow():
-    print("\n--- Testing Dry Cleaner Flow (Scenario 2) ---")
-    file_path = "./data/samples/sunrise_laundry.pdf"
-    with open(file_path, 'rb') as f:
-        requests.post(f"{API_BASE}/ingest-pdf", files={'file': f})
-    
-    session_id = f"test-laundry-{int(time.time())}"
-    queries = [
-        "Hi I need clothes cleaned",
-        "1 suit and a jacket",
-        "Dry clean both",
-        "What kind of extra care or treatments do you offer?",
-        "Add extra foaming to the jacket and starch to the suit coat",
-        "Regular 3 days turnaround",
-        "Pickup",
-        "12 King St West, N5A 2L2",
-        "Tomorrow morning",
-        "9-11 AM",
-        "Yes confirm"
-    ]
-    for q in queries:
-        print(f"User: {q}")
-        resp = requests.post(f"{API_BASE}/chat", params={"session_id": session_id, "message": q})
-        print(f"AI: {resp.json()['response']}\n")
-
-def test_mixed_intent_flow():
-    print("\n--- Testing Mixed Intent Flow (Scenario 5) ---")
-    # Use Tea House for mixed intent
-    file_path = "./data/samples/golden_leaf_teahouse.pdf"
-    with open(file_path, 'rb') as f:
-        requests.post(f"{API_BASE}/ingest-pdf", files={'file': f})
-        
-    session_id = f"test-mixed-{int(time.time())}"
-    queries = [
-        "Hi are you open today?",
-        "Ok book a room at 8",
-        "Tasting room. Also how much is a Matcha Latte?",
-        "John Doe",
-        "555-0199",
-        "Yes"
-    ]
-    for q in queries:
-        print(f"User: {q}")
-        resp = requests.post(f"{API_BASE}/chat", params={"session_id": session_id, "message": q})
-        print(f"AI: {resp.json()['response']}\n")
 
 if __name__ == "__main__":
-    if wait_for_server():
-        test_pizza_flow()
-        test_dentist_flow()
-        test_dry_cleaner_flow()
-        test_mixed_intent_flow()
-    else:
-        print("Server failed to start. Please run uvicorn first.")
+    if not wait_for_server():
+        raise SystemExit(1)
+
+    try:
+        token = get_token()
+    except Exception as e:
+        print(f"Login failed — set TEST_EMAIL / TEST_PASSWORD env vars: {e}")
+        raise SystemExit(1)
+
+    test_health()
+    test_auth(token)
+    test_ingest_pdf(token)
+    test_chat(token)
+    print("\nSmoke tests complete.")

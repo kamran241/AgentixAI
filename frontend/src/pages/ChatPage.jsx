@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import {
-  Plus, Send, X, FileUp, Bot, User, ShieldCheck, Zap,
-  Package, Calendar, Truck, ArrowLeft, LogOut,
+  Plus, Send, X, FileUp, Bot, User, ShieldCheck, ArrowLeft, LogOut,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import ReactMarkdown from 'react-markdown';
 import { useAuth } from '../context/AuthContext';
 import api from '../api';
+import CapabilityBadges from '../components/CapabilityBadges';
+import MarkdownContent from '../components/MarkdownContent';
 
 const UPLOAD_STEPS = [
   'Uploading file...',
@@ -19,17 +19,6 @@ const UPLOAD_STEPS = [
 
 function formatTime(date) {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-function CapabilityBadges({ capabilities }) {
-  if (!capabilities) return null;
-  return (
-    <div style={{ display: 'flex', gap: '0.375rem', flexWrap: 'wrap' }}>
-      {capabilities.has_orders && <span className="capability-badge badge-orders"><Package size={10} /> Orders</span>}
-      {capabilities.has_bookings && <span className="capability-badge badge-bookings"><Calendar size={10} /> Bookings</span>}
-      {capabilities.has_delivery && <span className="capability-badge badge-delivery"><Truck size={10} /> Delivery</span>}
-    </div>
-  );
 }
 
 function TypingIndicator() {
@@ -46,7 +35,7 @@ function TypingIndicator() {
 export default function ChatPage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const businessIdParam = searchParams.get('business_id');
 
   const [messages, setMessages] = useState([]);
@@ -68,6 +57,7 @@ export default function ChatPage() {
       api.get(`/businesses/${businessIdParam}`)
         .then(({ data }) => {
           setBusinessProfile({
+            id: Number(businessIdParam),
             name: data.name,
             type: data.type,
             capabilities: data.capabilities,
@@ -83,15 +73,22 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isTyping]);
 
+  // True when a business_id is in the URL but the profile fetch hasn't resolved yet
+  const profileLoading = !!businessIdParam && !businessProfile;
+
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || isTyping) return;
+    if (!text || isTyping || profileLoading) return;
     setMessages((p) => [...p, { type: 'human', content: text, timestamp: new Date() }]);
     setInput('');
     setIsTyping(true);
     try {
       const { data } = await api.post('/chat', null, {
-        params: { session_id: sessionId, message: text },
+        params: {
+          session_id: sessionId,
+          message: text,
+          ...(businessProfile?.id ? { business_id: businessProfile.id } : {}),
+        },
       });
       setMessages((p) => [...p, { type: 'ai', content: data.response, timestamp: new Date() }]);
     } catch {
@@ -118,6 +115,7 @@ export default function ChatPage() {
       const { data } = await api.post('/businesses/ingest', fd);
       uploadTimers.current.forEach(clearTimeout);
       setBusinessProfile({
+        id: data.business_id,
         name: data.business_name,
         type: Object.entries(data.capabilities || {}).filter(([, v]) => v).map(([k]) => k.replace('has_', '')).join(', '),
         capabilities: data.capabilities,
@@ -147,9 +145,7 @@ export default function ChatPage() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="logo-section">
-          <div className="logo-icon">
-            <Zap size={20} color="white" fill="white" />
-          </div>
+          <img src="/logo.svg" className="logo-icon" alt="Agentix" />
           <span className="logo-text">AGENTIX</span>
         </div>
 
@@ -161,6 +157,7 @@ export default function ChatPage() {
           <button className="sidebar-btn primary" onClick={() => {
             setMessages([]);
             setBusinessProfile(null);
+            setSearchParams({});
           }}>
             <Plus size={16} />
             <span className="btn-label">New Chat</span>
@@ -203,7 +200,7 @@ export default function ChatPage() {
                 <div className="header-business-name">{businessProfile.name}</div>
                 <div className="header-business-type">{businessProfile.type}</div>
               </div>
-              <CapabilityBadges capabilities={businessProfile.capabilities} />
+              <CapabilityBadges caps={businessProfile.capabilities} />
             </div>
           ) : (
             <div className="header-no-business">
@@ -236,7 +233,7 @@ export default function ChatPage() {
                       </div>
                       <div className={`message-bubble ${msg.type}`}>
                         {msg.type === 'ai'
-                          ? <div className="markdown-content"><ReactMarkdown>{msg.content}</ReactMarkdown></div>
+                          ? <MarkdownContent content={msg.content} />
                           : msg.content}
                       </div>
                       <div className="message-time">{formatTime(msg.timestamp)}</div>
@@ -254,12 +251,13 @@ export default function ChatPage() {
           <div className="input-wrapper">
             <input
               type="text"
-              placeholder="Ask me anything..."
+              placeholder={profileLoading ? 'Loading business profile…' : 'Ask me anything...'}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+              disabled={profileLoading}
             />
-            <button className="send-btn" onClick={handleSend} disabled={!input.trim() || isTyping}>
+            <button className="send-btn" onClick={handleSend} disabled={!input.trim() || isTyping || profileLoading}>
               <Send size={16} />
             </button>
           </div>
@@ -297,7 +295,7 @@ export default function ChatPage() {
                 </div>
                 <h4>{businessProfile.name}</h4>
                 <div className="profile-divider" />
-                <CapabilityBadges capabilities={businessProfile.capabilities} />
+                <CapabilityBadges caps={businessProfile.capabilities} />
               </div>
             </motion.div>
           )}

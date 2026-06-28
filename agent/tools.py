@@ -16,6 +16,49 @@ current_business_id: contextvars.ContextVar[Optional[int]] = contextvars.Context
     'current_business_id', default=None
 )
 
+# ── Booking record validation ─────────────────────────────────────────────────
+
+_NAME_KEYS  = {'customer_name', 'name', 'full_name', 'patient_name', 'client_name',
+               'guest_name', 'contact_name', 'user_name'}
+_PHONE_KEYS = {'customer_phone', 'phone', 'phone_number', 'mobile', 'contact',
+               'mobile_number', 'telephone', 'cell'}
+_EMAIL_KEYS = {'customer_email', 'email', 'email_address', 'contact_email', 'mail'}
+
+# Values the AI is known to hallucinate instead of real customer data
+_FAKE_VALUES = {
+    '', 'n/a', 'na', 'none', 'null', 'unknown', 'test', 'placeholder',
+    'john doe', 'jane doe', 'your name', 'customer name', 'customer',
+    '1234567890', '0000000000', '123456789', '000', 'xxxxxxxxxx',
+    'session123', 'test@example.com', 'example@example.com',
+}
+
+
+def _check_required_fields(record_data: dict, always_insert: bool) -> str | None:
+    """Return an error string if a booking record is missing real name/phone/email."""
+    if not always_insert:
+        return None  # order upserts are more flexible
+
+    data = {k.lower().strip(): str(v).lower().strip() for k, v in record_data.items() if v is not None}
+
+    name  = next((data[k] for k in _NAME_KEYS  if k in data and data[k]), None)
+    phone = next((data[k] for k in _PHONE_KEYS if k in data and data[k]), None)
+    email = next((data[k] for k in _EMAIL_KEYS if k in data and data[k]), None)
+
+    missing = []
+    if not name or name in _FAKE_VALUES or len(name) < 2:
+        missing.append("customer's full name")
+    if not phone or phone in _FAKE_VALUES or not any(ch.isdigit() for ch in phone):
+        missing.append("phone number")
+    if not email or email in _FAKE_VALUES or '@' not in email:
+        missing.append("email address")
+
+    if missing:
+        return (
+            f"BLOCKED: cannot save — missing {' and '.join(missing)}. "
+            "Ask the customer for this information before calling save_record again."
+        )
+    return None
+
 
 def _get_data_session():
     """Return a session for dynamic table operations — external DB if configured."""
@@ -62,7 +105,7 @@ def search_knowledge(query: str):
         sources = [doc.metadata.get("page", 0) for doc in docs]
         crud.create_audit_log(
             db, "knowledge_retrieved",
-            {"query": query, "sources": sources, "snippet": context[:200]},
+            {"sources": sources, "result_count": len(docs)},
             "system", business_id=biz_id
         )
         return {"context": context, "sources": sources}
@@ -114,7 +157,7 @@ def get_available_slots(date: str, resource: str = ""):
     - resource: optional — specific staff member or room to check
     Returns free slots, already-booked slots, and open hours for that day.
     """
-    from datetime import datetime, timedelta
+    from db.crud import compute_slots_for_date, get_business_session
 
     biz_id = current_business_id.get()
     platform_db = SessionLocal()
@@ -125,86 +168,48 @@ def get_available_slots(date: str, resource: str = ""):
         if not profile:
             return {"available_slots": [], "message": "Business not found."}
 
-        availability = profile.availability or {}
-        if isinstance(availability, str):
-            import json as _json
-            try:
-                availability = _json.loads(availability)
-            except Exception:
-                availability = {}
-        if not availability or not availability.get("schedule"):
+        if not (profile.availability or {}).get("schedule"):
             return {
                 "available_slots": [],
-                "message": "The business owner hasn't configured their schedule yet. Ask them to set it up in the admin panel."
+                "message": "The business owner hasn't configured their schedule yet. Ask them to set it up in the admin panel.",
             }
 
+        date = date.strip()
         try:
-            dt = datetime.strptime(date.strip(), "%Y-%m-%d")
+            from datetime import datetime
+            datetime.strptime(date, "%Y-%m-%d")
         except ValueError:
             return {"available_slots": [], "message": "Invalid date — use YYYY-MM-DD format."}
 
-        day_name = dt.strftime("%A").lower()
-        schedule = availability.get("schedule", {})
-        day_cfg = schedule.get(day_name, {})
-
-        if not day_cfg.get("open", False):
-            open_days = [d.capitalize() for d, v in schedule.items() if v.get("open")]
-            return {
-                "available_slots": [],
-                "open": False,
-                "message": f"We are closed on {day_name.capitalize()}s. Open days: {', '.join(open_days)}. Please suggest a different day.",
-            }
-
-        if date in (availability.get("blocked_dates") or []):
-            return {"available_slots": [], "open": False,
-                    "message": f"{date} is a holiday or blocked date. Please suggest another day."}
-
-        slot_min = int(availability.get("slot_duration", 30))
-        buffer   = int(availability.get("buffer_minutes", 0))
-        start_dt = datetime.strptime(f"{date} {day_cfg.get('start','09:00')}", "%Y-%m-%d %H:%M")
-        end_dt   = datetime.strptime(f"{date} {day_cfg.get('end','17:00')}", "%Y-%m-%d %H:%M")
-
-        all_slots = []
-        cur = start_dt
-        while cur + timedelta(minutes=slot_min) <= end_dt:
-            all_slots.append(cur.strftime("%H:%M"))
-            cur += timedelta(minutes=slot_min + buffer)
-
-        # Check booked slots
-        data_db = _get_data_session()
-        booked = set()
+        data_db = get_business_session(profile)
         try:
-            for t in (profile.dynamic_tables or []):
-                time_cols = [c["name"] for c in t.get("columns", [])
-                             if any(k in c["name"].lower() for k in ["time","date","appointment","booking","slot"])]
-                for col in time_cols:
-                    safe_t = "".join(c for c in t["table_name"] if c.isalnum() or c == "_")
-                    safe_c = "".join(c for c in col if c.isalnum() or c == "_")
-                    try:
-                        rows = data_db.execute(
-                            text(f"SELECT CAST({safe_c} AS TEXT) FROM {safe_t} WHERE CAST({safe_c} AS TEXT) LIKE :p"),
-                            {"p": f"{date}%"}
-                        ).fetchall()
-                        for r in rows:
-                            if r[0]:
-                                booked.add(r[0][11:16] if len(r[0]) > 10 else r[0][:5])
-                    except Exception:
-                        pass
+            info = compute_slots_for_date(profile, date, data_db)
         finally:
             data_db.close()
 
-        free = [s for s in all_slots if s not in booked]
+        if not info:
+            return {"available_slots": [], "message": "No schedule information available for that date."}
+
+        if not info.get("open"):
+            schedule = (profile.availability or {}).get("schedule", {})
+            open_days = [d.capitalize() for d, v in schedule.items() if v.get("open")]
+            reason = info.get("reason", "")
+            if reason == "holiday/blocked":
+                msg = f"{date} is a holiday or blocked date. Please suggest another day."
+            else:
+                msg = f"We are closed on {info['day']}s. Open days: {', '.join(open_days)}. Please suggest a different day."
+            return {"available_slots": [], "open": False, "message": msg}
+
+        free = info["free_slots"]
         return {
             "date": date,
-            "day": day_name.capitalize(),
-            "open_hours": f"{day_cfg.get('start')} – {day_cfg.get('end')}",
-            "slot_duration_minutes": slot_min,
+            "day": info["day"],
+            "open_hours": info.get("open_hours", ""),
             "available_slots": free,
-            "booked_slots": sorted(booked),
+            "booked_slots": info.get("booked_slots", []),
             "message": (
-                f"{len(free)} slot(s) free on {date} ({day_name.capitalize()}). "
-                f"First available: {free[0]}." if free
-                else f"No slots available on {date}. All {len(all_slots)} slots are booked."
+                f"{len(free)} slot(s) free on {date} ({info['day']}). First available: {free[0]}."
+                if free else f"No slots available on {date}. All slots are booked."
             ),
         }
     finally:
@@ -288,6 +293,11 @@ def save_record(table_name: str, record_data: dict, session_id: str, always_inse
     - always_insert: set True for bookings/appointments so each booking is a NEW row.
       Set False (default) for orders where you want to update the session's existing row.
     """
+    # Validate required fields before touching the database
+    validation_error = _check_required_fields(record_data, always_insert)
+    if validation_error:
+        return {"status": "error", "message": validation_error}
+
     platform_db = SessionLocal()
     db = _get_data_session()
     biz_id = current_business_id.get()
@@ -295,13 +305,88 @@ def save_record(table_name: str, record_data: dict, session_id: str, always_inse
         if not _validate_table(platform_db, table_name, biz_id):
             return {"status": "error", "message": f"Table '{table_name}' not found for this business."}
 
-        crud.generic_save(db, table_name, session_id, record_data, always_insert=always_insert)
+        ok, msg = crud.generic_save(db, table_name, session_id, record_data, always_insert=always_insert)
+        if not ok:
+            return {"status": "error", "message": msg}
+
         crud.create_audit_log(
             platform_db, "record_saved",
             {"table": table_name, "data_keys": list(record_data.keys())},
             session_id, business_id=biz_id
         )
+
+        # Fire notification to business owner for new bookings
+        if always_insert:
+            try:
+                profile = crud.get_business_by_id(platform_db, biz_id)
+                if profile and profile.user_id:
+                    customer = record_data.get("customer_name") or record_data.get("name") or "A customer"
+                    time_val = next(
+                        (str(v) for k, v in record_data.items()
+                         if any(w in k.lower() for w in ("time", "date", "appointment", "slot")) and v),
+                        None
+                    )
+                    notif_msg = f"{customer} made a booking at {profile.name}"
+                    if time_val:
+                        notif_msg += f" — {time_val}"
+                    crud.create_notification(
+                        platform_db,
+                        user_id=profile.user_id,
+                        business_id=biz_id,
+                        title="New Booking",
+                        message=notif_msg,
+                        type="booking",
+                    )
+            except Exception:
+                pass  # never block the booking save due to notification failure
+
         return {"status": "success", "message": f"Record saved to '{table_name}'."}
+    finally:
+        platform_db.close()
+        db.close()
+
+
+# ── Cancel Booking ────────────────────────────────────────────────────────────
+
+@tool
+def cancel_booking(table_name: str, booking_id: int):
+    """
+    Cancel (delete) an existing booking row to free its time slot.
+    Use this for rescheduling: call get_records first to find the booking id,
+    then cancel_booking to free the old slot, then save_record for the new time.
+    - table_name: exact table name from the schema
+    - booking_id: the 'id' value of the row to cancel (obtained from get_records)
+    """
+    platform_db = SessionLocal()
+    db = _get_data_session()
+    biz_id = current_business_id.get()
+    try:
+        if not _validate_table(platform_db, table_name, biz_id):
+            return {"status": "error", "message": f"Table '{table_name}' not found for this business."}
+
+        safe_table = "".join(c for c in table_name if c.isalnum() or c == "_")
+        result = db.execute(
+            text(f"DELETE FROM {safe_table} WHERE id = :bid"),
+            {"bid": booking_id},
+        )
+
+        # Check rowcount before commit — DBAPI spec only guarantees it's valid
+        # on the cursor before the transaction is closed.
+        if result.rowcount == 0:
+            db.rollback()
+            return {"status": "error", "message": f"No booking found with id={booking_id}."}
+
+        db.commit()
+
+        crud.create_audit_log(
+            platform_db, "booking_cancelled",
+            {"table": table_name, "booking_id": booking_id},
+            "system", business_id=biz_id,
+        )
+        return {
+            "status": "success",
+            "message": f"Booking #{booking_id} cancelled and slot freed. Now proceed to book the new time with save_record.",
+        }
     finally:
         platform_db.close()
         db.close()

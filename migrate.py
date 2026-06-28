@@ -5,9 +5,20 @@ Works with both SQLite and PostgreSQL.
 
 Run with: python migrate.py
 """
+import json
 import secrets
 from sqlalchemy import text
 from db.database import engine, SessionLocal
+
+# JSON columns and the empty-value they should fall back to when the stored
+# value is NULL or unparseable (e.g. a Python repr like "{'key': 'val'}").
+JSON_COLS = {
+    "widget_config":  "{}",
+    "availability":   "{}",
+    "config":         "{}",
+    "capabilities":   "{}",
+    "dynamic_tables": "[]",
+}
 
 
 def _existing_columns(conn) -> set:
@@ -16,7 +27,6 @@ def _existing_columns(conn) -> set:
         result = conn.execute(text("PRAGMA table_info(business_profiles)"))
         return {row[1] for row in result}
     else:
-        # PostgreSQL / Neon
         result = conn.execute(text(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_name = 'business_profiles' AND table_schema = 'public'"
@@ -24,10 +34,41 @@ def _existing_columns(conn) -> set:
         return {row[0] for row in result}
 
 
+def _repair_json_columns(db):
+    """
+    Scan every business row and fix any JSON column whose stored value is
+    not parseable JSON (e.g. Python repr strings, empty strings).
+    NULL values are left alone — the ORM returns None and callers use `or {}`.
+    """
+    rows = db.execute(text("SELECT id FROM business_profiles")).fetchall()
+    for (row_id,) in rows:
+        for col, empty in JSON_COLS.items():
+            val = db.execute(
+                text(f"SELECT {col} FROM business_profiles WHERE id = :id"),
+                {"id": row_id},
+            ).scalar()
+
+            if val is None:
+                continue  # NULL → Python None, handled by `or {}` guards everywhere
+
+            if isinstance(val, str):
+                try:
+                    json.loads(val)
+                except (json.JSONDecodeError, ValueError):
+                    db.execute(
+                        text(f"UPDATE business_profiles SET {col} = :v WHERE id = :id"),
+                        {"v": empty, "id": row_id},
+                    )
+                    print(f"  Repaired {col} on row {row_id} (invalid JSON)")
+    db.commit()
+
+
 def migrate():
     with engine.connect() as conn:
         existing = _existing_columns(conn)
 
+        # TEXT is the correct storage type — SQLAlchemy's JSON column type handles
+        # json.loads / json.dumps at the Python layer for both SQLite and PostgreSQL.
         new_cols = {
             "user_id":         "INTEGER",
             "public_token":    "TEXT",
@@ -52,9 +93,9 @@ def migrate():
         if not added:
             print("  Nothing to migrate — all columns already exist.")
 
-    # Backfill public_token for rows that have none
     db = SessionLocal()
     try:
+        # Backfill public_token for rows that have none
         rows = db.execute(text(
             "SELECT id FROM business_profiles WHERE public_token IS NULL"
         )).fetchall()
@@ -65,6 +106,9 @@ def migrate():
         db.commit()
         if rows:
             print(f"  Backfilled public_token for {len(rows)} row(s).")
+
+        # Fix any JSON columns containing unparseable values
+        _repair_json_columns(db)
     finally:
         db.close()
 

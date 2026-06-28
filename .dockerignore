@@ -1,0 +1,40 @@
+# Secrets — never bake these into an image
+.env
+*.env
+
+# Local data — mounted as a volume at runtime, not baked in
+data/
+
+# Version control
+.git/
+.gitignore
+
+# Python artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Node / frontend build artefacts
+frontend/node_modules/
+frontend/dist/
+
+# IDE / OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Test artefacts
+.pytest_cache/
+tests/sample_data/
+htmlcov/
+.coverage
+
+# Claude Code session files
+.claude/
